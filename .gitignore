@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+*.venv
+
+# Testing / coverage
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Andor SDK artefacts (not redistributable)
+pyAndorSDK2/
+*.dll
+*.so.*
+ATMCD*.lib
+
+# Data files produced by the application
+*.npz
+*.h5
+*.hdf5
+*.sif
+
+# Build / packaging
+*.whl
+*.tar.gz
+MANIFEST
+pip-wheel-metadata/

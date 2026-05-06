@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "idus420-gui"
+version = "0.1.0"
+description = "Desktop acquisition and demodulation GUI for Andor iDus 420 cameras."
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{ name = "Edoardo Lab" }]
+license = { text = "MIT" }
+dependencies = [
+  "PyQt6>=6.6,<6.8; python_version < '3.9'",
+  "PyQt6>=6.6,<7; python_version >= '3.9'",
+  "pyqtgraph>=0.13,<0.14",
+  "numpy>=1.24,<1.25; python_version < '3.9'",
+  "numpy>=1.24,<3; python_version >= '3.9'",
+  "scipy>=1.10,<1.11; python_version < '3.9'",
+  "scipy>=1.10,<2; python_version >= '3.9'",
+  "h5py>=3.9,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4,<9",
+  "pytest-qt>=4.2,<5",
+  "ruff>=0.4,<1",
+]
+andor = []
+
+[project.scripts]
+idus420-gui = "idus420_gui.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["SLF001"]   # _validate_roi cross-panel call is intentional
