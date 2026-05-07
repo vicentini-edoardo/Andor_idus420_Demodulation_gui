@@ -166,6 +166,15 @@ class AcquisitionPanel(QWidget):
             pen=pg.mkPen(theme.CURVE_GREEN, width=1.5)
         )
 
+        # Add vertical resize button inside spectrum plot
+        self.spectrum_autorange_button = QPushButton("⇅ Auto Range")
+        self.spectrum_autorange_button.setMaximumWidth(100)
+        self.spectrum_autorange_button.clicked.connect(self._auto_range_spectrum)
+        self.spectrum_proxy = pg.GraphicsProxyWidget()
+        self.spectrum_proxy.setWidget(self.spectrum_autorange_button)
+        self.spectrum_plot.addItem(self.spectrum_proxy)
+        self.spectrum_proxy.setPos(10, 10)
+
         splitter.addWidget(self.plot_widget)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -268,6 +277,10 @@ class AcquisitionPanel(QWidget):
         self._peak_history.append(float(result.peak_amplitude))  # type: ignore[attr-defined]
         self._peak_history = self._peak_history[-600:]
         self.history_curve.setData(self._peak_history)
+
+    def _auto_range_spectrum(self) -> None:
+        self.spectrum_plot.enableAutoRange()
+        self.spectrum_plot.autoRange()
 
     def _choose_directory(self) -> None:
         directory = QFileDialog.getExistingDirectory(
