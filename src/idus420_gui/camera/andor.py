@@ -426,6 +426,11 @@ class AndorIDusBackend(CameraBackend):
     def _validate_horizontal_bin(hbin: int, xpix: int, read_mode_name: str) -> None:
         if hbin < 1:
             raise CameraError(f"{read_mode_name} horizontal bin must be >= 1.")
+        if hbin != 1:
+            raise CameraError(
+                f"{read_mode_name} horizontal bin {hbin} is not supported on this iDus backend. "
+                "Use horizontal bin = 1."
+            )
         if xpix % hbin != 0:
             raise CameraError(
                 f"{read_mode_name} horizontal bin {hbin} must divide detector width {xpix}."

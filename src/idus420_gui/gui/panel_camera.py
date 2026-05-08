@@ -208,6 +208,7 @@ class CameraPanel(QWidget):
         self.apply_button.clicked.connect(self._apply_config)
         self.exposure_spin.valueChanged.connect(self.exposure_changed.emit)
         self.read_mode_combo.currentIndexChanged.connect(self._on_read_mode_changed)
+        self.backend_combo.currentIndexChanged.connect(self._update_hbin_limits)
 
         for widget in [
             self.hs_combo, self.vs_combo, self.preamp_combo,
@@ -218,6 +219,7 @@ class CameraPanel(QWidget):
             spin.valueChanged.connect(self._mark_pending)
 
         self._on_read_mode_changed()
+        self._update_hbin_limits()
         self._set_config_enabled(False)
 
     # ------------------------------------------------------------------
@@ -248,6 +250,19 @@ class CameraPanel(QWidget):
         self._st_center_label.setVisible(is_st)
         self._st_height_label.setVisible(is_st)
         self._hbin_label.setText("ST H bin" if is_st else "FVB H bin")
+
+    def _update_hbin_limits(self) -> None:
+        if self.backend_combo.currentText() == "Andor iDus":
+            self.hbin_spin.setRange(1, 1)
+            self.hbin_spin.setToolTip(
+                "The iDus backend only supports horizontal bin = 1 in FVB and Single-Track."
+            )
+            self.hbin_spin.setValue(1)
+            return
+        current_max = self.hbin_spin.maximum()
+        if current_max <= 1:
+            self.hbin_spin.setRange(1, 1024)
+        self.hbin_spin.setToolTip("")
 
     def _mark_pending(self) -> None:
         if not self._pending_changes:
@@ -315,7 +330,15 @@ class CameraPanel(QWidget):
         self.st_center_spin.setRange(1, ypix)
         self.st_center_spin.setValue(ypix // 2)
         self.st_height_spin.setRange(1, ypix)
-        self.hbin_spin.setRange(1, xpix)
+        if isinstance(self.backend, AndorIDusBackend):
+            self.hbin_spin.setRange(1, 1)
+            self.hbin_spin.setValue(1)
+            self.hbin_spin.setToolTip(
+                "The iDus backend only supports horizontal bin = 1 in FVB and Single-Track."
+            )
+        else:
+            self.hbin_spin.setRange(1, xpix)
+            self.hbin_spin.setToolTip("")
         self.hs_combo.clear()
         self.hs_combo.addItems([f"{value:g}" for value in self.backend.list_hs_speeds()])
         self.vs_combo.clear()
