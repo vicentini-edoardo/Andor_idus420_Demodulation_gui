@@ -54,6 +54,8 @@ class MainWindow(QMainWindow):
         self.camera_panel.log_message.connect(self.log)
         self.camera_panel.exposure_changed.connect(self.live_panel.set_exposure)
         self.camera_panel.exposure_changed.connect(self.demod_panel.set_exposure)
+        self.camera_panel.frame_geometry_changed.connect(self.live_panel.set_frame_width)
+        self.camera_panel.frame_geometry_changed.connect(self.demod_panel.set_frame_width)
         self.live_panel.log_message.connect(self.log)
         self.demod_panel.log_message.connect(self.log)
         self.acquire_panel.log_message.connect(self.log)

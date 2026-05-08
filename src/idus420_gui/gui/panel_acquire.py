@@ -10,6 +10,7 @@ from PyQt6.QtCore import QSettings, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
+    QGraphicsProxyWidget,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -170,7 +171,7 @@ class AcquisitionPanel(QWidget):
         self.spectrum_autorange_button = QPushButton("⇅ Auto Range")
         self.spectrum_autorange_button.setMaximumWidth(100)
         self.spectrum_autorange_button.clicked.connect(self._auto_range_spectrum)
-        self.spectrum_proxy = pg.GraphicsProxyWidget()
+        self.spectrum_proxy = QGraphicsProxyWidget()
         self.spectrum_proxy.setWidget(self.spectrum_autorange_button)
         self.spectrum_plot.addItem(self.spectrum_proxy)
         self.spectrum_proxy.setPos(10, 10)

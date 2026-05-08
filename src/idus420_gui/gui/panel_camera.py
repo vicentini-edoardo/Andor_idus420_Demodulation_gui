@@ -40,6 +40,7 @@ class CameraPanel(QWidget):
     temperature_changed = pyqtSignal(float, object)
     log_message = pyqtSignal(str)
     exposure_changed = pyqtSignal(float)
+    frame_geometry_changed = pyqtSignal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -134,8 +135,14 @@ class CameraPanel(QWidget):
         self.st_height_spin.setValue(10)
         self.st_height_spin.setSuffix(" px")
 
+        self.hbin_spin = QSpinBox()
+        self.hbin_spin.setRange(1, 1024)
+        self.hbin_spin.setValue(1)
+        self.hbin_spin.setSuffix(" px")
+
         self._st_center_label = QLabel("Center row")
         self._st_height_label = QLabel("Track height")
+        self._hbin_label = QLabel("H bin")
 
         self.hs_combo = QComboBox()
         self.vs_combo = QComboBox()
@@ -172,15 +179,19 @@ class CameraPanel(QWidget):
         config_grid.addWidget(QLabel("Pre-amp gain"), 2, 2)
         config_grid.addWidget(self.preamp_combo, 2, 3)
 
-        # Row 3: Shutter | Exposure
-        config_grid.addWidget(QLabel("Shutter"), 3, 0)
-        config_grid.addWidget(self.shutter_combo, 3, 1)
+        # Row 3: H bin | Exposure
+        config_grid.addWidget(self._hbin_label, 3, 0)
+        config_grid.addWidget(self.hbin_spin, 3, 1)
         config_grid.addWidget(QLabel("Exposure (s)"), 3, 2)
         config_grid.addWidget(self.exposure_spin, 3, 3)
 
-        # Row 4: Apply button (spans all cols) + actual timings
-        config_grid.addWidget(self.apply_button, 4, 0, 1, 2)
-        config_grid.addWidget(self.actual_label, 4, 2, 1, 2)
+        # Row 4: Shutter
+        config_grid.addWidget(QLabel("Shutter"), 4, 0)
+        config_grid.addWidget(self.shutter_combo, 4, 1)
+
+        # Row 5: Apply button (spans all cols) + actual timings
+        config_grid.addWidget(self.apply_button, 5, 0, 1, 2)
+        config_grid.addWidget(self.actual_label, 5, 2, 1, 2)
 
         right_col = QVBoxLayout()
         right_col.setSpacing(10)
@@ -203,7 +214,7 @@ class CameraPanel(QWidget):
             self.shutter_combo, self.read_mode_combo,
         ]:
             widget.currentIndexChanged.connect(self._mark_pending)
-        for spin in [self.exposure_spin, self.st_center_spin, self.st_height_spin]:
+        for spin in [self.exposure_spin, self.st_center_spin, self.st_height_spin, self.hbin_spin]:
             spin.valueChanged.connect(self._mark_pending)
 
         self._on_read_mode_changed()
@@ -236,6 +247,7 @@ class CameraPanel(QWidget):
         self.st_height_spin.setVisible(is_st)
         self._st_center_label.setVisible(is_st)
         self._st_height_label.setVisible(is_st)
+        self._hbin_label.setText("ST H bin" if is_st else "FVB H bin")
 
     def _mark_pending(self) -> None:
         if not self._pending_changes:
@@ -299,10 +311,11 @@ class CameraPanel(QWidget):
             return
         t_min, t_max = self.backend.temperature_range()
         self.temp_spin.setRange(t_min, t_max)
-        _, ypix = self.backend.detector_size()
+        xpix, ypix = self.backend.detector_size()
         self.st_center_spin.setRange(1, ypix)
         self.st_center_spin.setValue(ypix // 2)
         self.st_height_spin.setRange(1, ypix)
+        self.hbin_spin.setRange(1, xpix)
         self.hs_combo.clear()
         self.hs_combo.addItems([f"{value:g}" for value in self.backend.list_hs_speeds()])
         self.vs_combo.clear()
@@ -338,6 +351,7 @@ class CameraPanel(QWidget):
         try:
             self.backend.configure(self.current_config())
             timings = self.backend.query_timings()
+            self.frame_geometry_changed.emit(self.backend.frame_width())
             t = timings
             period = t.readout_s if t.readout_s and t.readout_s > 0 else t.kinetic_s
             f_max = (1.0 / period) if period and period > 0 else float("nan")
@@ -371,9 +385,11 @@ class CameraPanel(QWidget):
             shutter_mode=shutter,
             exposure_s=self.exposure_spin.value(),
             read_mode=read_mode,
+            fvb_horizontal_bin=self.hbin_spin.value(),
             single_track=SingleTrackConfig(
                 center_row=self.st_center_spin.value(),
                 height=self.st_height_spin.value(),
+                horizontal_bin=self.hbin_spin.value(),
             ),
         )
 
@@ -391,6 +407,7 @@ class CameraPanel(QWidget):
             self.read_mode_combo,
             self.st_center_spin,
             self.st_height_spin,
+            self.hbin_spin,
         ]:
             widget.setEnabled(enabled)
 
@@ -407,6 +424,7 @@ class CameraPanel(QWidget):
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/read_mode", self.read_mode_combo.currentText())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/st_center", self.st_center_spin.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/st_height", self.st_height_spin.value())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/horizontal_bin", self.hbin_spin.value())
 
     def _restore_settings(self) -> None:
         s = QSettings("idus420_gui", "CameraPanel")
@@ -430,4 +448,6 @@ class CameraPanel(QWidget):
             self.st_center_spin.setValue(int(val))
         if (val := s.value(f"{_SETTINGS_KEY_PREFIX}/st_height")) is not None:
             self.st_height_spin.setValue(int(val))
+        if (val := s.value(f"{_SETTINGS_KEY_PREFIX}/horizontal_bin")) is not None:
+            self.hbin_spin.setValue(int(val))
         self._clear_pending()

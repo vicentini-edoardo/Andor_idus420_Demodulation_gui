@@ -42,6 +42,7 @@ class AndorIDusBackend(CameraBackend):
         self._connected = False
         self._xpix = 0
         self._ypix = 0
+        self._frame_width = 0
         self._n_kinetics = 0
         self._code_names = self._build_code_name_map()
 
@@ -52,6 +53,7 @@ class AndorIDusBackend(CameraBackend):
             self._sdk.GetDetector(),
             "GetDetector",
         )
+        self._frame_width = self._xpix
         self._check(self._sdk.SetReadMode(0), "SetReadMode(FVB)")
         self._check(self._sdk.SetFVBHBin(1), "SetFVBHBin(1)")
         LOG.info("Andor SDK version: %s", self.sdk_version())
@@ -82,6 +84,12 @@ class AndorIDusBackend(CameraBackend):
         _, xpix, ypix = self._checked_tuple(self._sdk.GetDetector(), "GetDetector")
         self._xpix, self._ypix = int(xpix), int(ypix)
         return self._xpix, self._ypix
+
+    def frame_width(self) -> int:
+        if self._frame_width > 0:
+            return self._frame_width
+        xpix, _ = self.detector_size()
+        return xpix
 
     def temperature_range(self) -> tuple[int, int]:
         _, t_min, t_max = self._checked_tuple(
@@ -128,7 +136,10 @@ class AndorIDusBackend(CameraBackend):
         ]
 
     def configure(self, cfg: CameraConfig) -> None:
+        xpix, _ = self.detector_size()
         if cfg.read_mode is ReadMode.SINGLE_TRACK:
+            hbin = int(cfg.single_track.horizontal_bin)
+            self._validate_horizontal_bin(hbin, xpix, "Single-Track")
             self._check(self._sdk.SetReadMode(3), "SetReadMode(SingleTrack)")
             self._check(
                 self._sdk.SetSingleTrack(
@@ -137,9 +148,16 @@ class AndorIDusBackend(CameraBackend):
                 ),
                 "SetSingleTrack",
             )
+            self._check(
+                self._sdk.SetSingleTrackHBin(hbin),
+                f"SetSingleTrackHBin({hbin})",
+            )
         else:
+            hbin = int(cfg.fvb_horizontal_bin)
+            self._validate_horizontal_bin(hbin, xpix, "FVB")
             self._check(self._sdk.SetReadMode(0), "SetReadMode(FVB)")
-            self._check(self._sdk.SetFVBHBin(1), "SetFVBHBin(1)")
+            self._check(self._sdk.SetFVBHBin(hbin), f"SetFVBHBin({hbin})")
+        self._frame_width = xpix // hbin
         self._check(
             self._sdk.SetShutter(1, self._shutter_code(cfg.shutter_mode), 0, 0),
             "SetShutter",
@@ -237,17 +255,17 @@ class AndorIDusBackend(CameraBackend):
         raise CameraError(f"WaitForAcquisitionTimeOut: {name} ({ret})")
 
     def get_oldest_frame(self) -> np.ndarray:
-        xpix, _ = self.detector_size()
-        buf = np.empty(xpix, dtype=np.uint16)
+        frame_width = self.frame_width()
+        buf = np.empty(frame_width, dtype=np.uint16)
         try:
-            data = self._read_frame_method("GetOldestImage16", xpix, buf)
+            data = self._read_frame_method("GetOldestImage16", frame_width, buf)
             if data is not None:
                 return data
         except TypeError:
             if not hasattr(self._sdk, "GetMostRecentImage16"):
                 raise
         if hasattr(self._sdk, "GetMostRecentImage16"):
-            data = self._read_frame_method("GetMostRecentImage16", xpix, buf)
+            data = self._read_frame_method("GetMostRecentImage16", frame_width, buf)
             if data is not None:
                 return data
         return buf
@@ -260,9 +278,9 @@ class AndorIDusBackend(CameraBackend):
             self._check(ret, "GetNumberNewImages")
         if last < first:
             return None
-        xpix, _ = self.detector_size()
+        frame_width = self.frame_width()
         n = int(last - first + 1)
-        buf = np.empty(n * xpix, dtype=np.uint16)
+        buf = np.empty(n * frame_width, dtype=np.uint16)
         ret, valid_first, valid_last = self._call_with_optional_length(
             "GetImages16",
             first,
@@ -271,15 +289,15 @@ class AndorIDusBackend(CameraBackend):
         )
         self._check(ret, "GetImages16")
         valid_n = int(valid_last - valid_first + 1)
-        return buf.reshape(n, xpix)[:valid_n].copy()
+        return buf.reshape(n, frame_width)[:valid_n].copy()
 
     def get_all_frames(self, n: int) -> np.ndarray:
-        xpix, _ = self.detector_size()
-        buf = np.empty(int(n) * xpix, dtype=np.uint16)
-        data = self._read_frame_method("GetAcquiredData16", int(n) * xpix, buf)
+        frame_width = self.frame_width()
+        buf = np.empty(int(n) * frame_width, dtype=np.uint16)
+        data = self._read_frame_method("GetAcquiredData16", int(n) * frame_width, buf)
         if data is not None:
-            return data.reshape(int(n), xpix).copy()
-        return buf.reshape(int(n), xpix)
+            return data.reshape(int(n), frame_width).copy()
+        return buf.reshape(int(n), frame_width)
 
     def sdk_version(self) -> str:
         if hasattr(self._sdk, "GetVersionInfo"):
@@ -403,6 +421,15 @@ class AndorIDusBackend(CameraBackend):
             return np.asarray(result, dtype=np.uint16).reshape(size).copy()
         self._check(int(result), method_name)
         return None
+
+    @staticmethod
+    def _validate_horizontal_bin(hbin: int, xpix: int, read_mode_name: str) -> None:
+        if hbin < 1:
+            raise CameraError(f"{read_mode_name} horizontal bin must be >= 1.")
+        if xpix % hbin != 0:
+            raise CameraError(
+                f"{read_mode_name} horizontal bin {hbin} must divide detector width {xpix}."
+            )
 
     @staticmethod
     def _trigger_code(trigger: TriggerMode) -> int:

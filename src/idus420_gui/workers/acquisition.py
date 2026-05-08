@@ -64,7 +64,7 @@ class DemodulationWorker(QThread):
 
     def run(self) -> None:
         try:
-            xpix, _ = self.backend.detector_size()
+            frame_width = self.backend.frame_width()
             timeout_ms = self.settings.frame_timeout_ms()
             while self._running:
                 self.backend.setup_kinetic(
@@ -73,7 +73,7 @@ class DemodulationWorker(QThread):
                     TriggerMode.EXTERNAL,
                 )
                 self.backend.start()
-                frames = np.empty((self.settings.n_block, xpix), dtype=np.uint16)
+                frames = np.empty((self.settings.n_block, frame_width), dtype=np.uint16)
                 acquired = 0
                 for idx in range(self.settings.n_block):
                     if not self._running:
@@ -209,7 +209,7 @@ class AcquisitionWorker(QThread):
             frames = (
                 np.stack(all_frames, axis=0)
                 if all_frames
-                else np.empty((0, self.backend.detector_size()[0]), dtype=np.uint16)
+                else np.empty((0, self.backend.frame_width()), dtype=np.uint16)
             )
             roi_ts = np.asarray(
                 [

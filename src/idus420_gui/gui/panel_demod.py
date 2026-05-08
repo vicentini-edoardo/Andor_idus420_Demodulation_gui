@@ -44,17 +44,17 @@ class DemodPanel(QWidget):
 
     def set_backend(self, backend: CameraBackend | None) -> None:
         self.backend = backend
-        if backend is not None and backend.is_connected():
-            xpix, _ = backend.detector_size()
-            self._detector_width = xpix
-            self.roi_start.setMaximum(xpix - 1)
-            self.roi_end.setMaximum(xpix - 1)
-            self.roi_start.setValue(min(self.roi_start.value(), xpix - 1))
-            self.roi_end.setValue(min(self.roi_end.value(), xpix - 1))
-        else:
-            self._detector_width = 100_000
-            self.roi_start.setMaximum(100_000)
-            self.roi_end.setMaximum(100_000)
+        self.set_frame_width(
+            backend.frame_width() if backend is not None and backend.is_connected() else 100_000
+        )
+
+    def set_frame_width(self, width: int) -> None:
+        self._detector_width = max(1, int(width))
+        self.roi_start.setMaximum(self._detector_width - 1)
+        self.roi_end.setMaximum(self._detector_width - 1)
+        self.roi_start.setValue(min(self.roi_start.value(), self._detector_width - 1))
+        self.roi_end.setValue(min(self.roi_end.value(), self._detector_width - 1))
+        self._update_roi_region()
 
     def set_exposure(self, value: float) -> None:
         self.exposure_spin.setValue(value)

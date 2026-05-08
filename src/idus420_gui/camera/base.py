@@ -64,6 +64,7 @@ class SingleTrackConfig:
 
     center_row: int = 128
     height: int = 10
+    horizontal_bin: int = 1
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,7 @@ class CameraConfig:
     ad_channel: int = 0
     output_amplifier: int = 0
     read_mode: ReadMode = ReadMode.FVB
+    fvb_horizontal_bin: int = 1
     single_track: SingleTrackConfig = SingleTrackConfig()
 
 
@@ -108,6 +110,9 @@ class CameraBackend(ABC):
 
     @abstractmethod
     def detector_size(self) -> tuple[int, int]: ...
+
+    @abstractmethod
+    def frame_width(self) -> int: ...
 
     @abstractmethod
     def temperature_range(self) -> tuple[int, int]: ...
@@ -176,4 +181,3 @@ class CameraBackend(ABC):
     def save_as_sif(self, path: str) -> None:
         """Optional native Andor save hook."""
         raise CameraError("Native SIF saving is not supported by this backend.")
-
