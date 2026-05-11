@@ -17,6 +17,7 @@ from idus420_gui.camera.base import (
     CameraBackend,
     CameraConfig,
     CameraError,
+    CropConfig,
     ReadMode,
     ShutterMode,
     TempStatus,
@@ -137,27 +138,54 @@ class AndorIDusBackend(CameraBackend):
 
     def configure(self, cfg: CameraConfig) -> None:
         xpix, _ = self.detector_size()
-        if cfg.read_mode is ReadMode.SINGLE_TRACK:
-            hbin = int(cfg.single_track.horizontal_bin)
-            self._validate_horizontal_bin(hbin, xpix, "Single-Track")
-            self._check(self._sdk.SetReadMode(3), "SetReadMode(SingleTrack)")
-            self._check(
-                self._sdk.SetSingleTrack(
-                    cfg.single_track.center_row,
-                    cfg.single_track.height,
-                ),
-                "SetSingleTrack",
-            )
-            self._check(
-                self._sdk.SetSingleTrackHBin(hbin),
-                f"SetSingleTrackHBin({hbin})",
-            )
-        else:
+        crop = cfg.crop
+        if crop.active:
+            if cfg.read_mode is not ReadMode.FVB:
+                raise CameraError(
+                    "Isolated crop mode on the iDus is only supported in FVB read mode."
+                )
             hbin = int(cfg.fvb_horizontal_bin)
-            self._validate_horizontal_bin(hbin, xpix, "FVB")
+            if hbin < 1:
+                raise CameraError("FVB horizontal bin must be >= 1.")
+            if crop.crop_width % hbin != 0:
+                raise CameraError(
+                    f"Crop width {crop.crop_width} must be divisible by hbin {hbin}."
+                )
             self._check(self._sdk.SetReadMode(0), "SetReadMode(FVB)")
-            self._check(self._sdk.SetFVBHBin(hbin), f"SetFVBHBin({hbin})")
-        self._frame_width = xpix // hbin
+            self._check(
+                self._sdk.SetIsolatedCropMode(
+                    1, crop.crop_height, crop.crop_width, crop.vbin, hbin
+                ),
+                "SetIsolatedCropMode",
+            )
+            self._frame_width = crop.crop_width // hbin
+        else:
+            # Disable crop mode, then configure read mode normally.
+            self._check(
+                self._sdk.SetIsolatedCropMode(0, 1, xpix, 1, 1),
+                "SetIsolatedCropMode(disable)",
+            )
+            if cfg.read_mode is ReadMode.SINGLE_TRACK:
+                hbin = int(cfg.single_track.horizontal_bin)
+                self._validate_horizontal_bin(hbin, xpix, "Single-Track")
+                self._check(self._sdk.SetReadMode(3), "SetReadMode(SingleTrack)")
+                self._check(
+                    self._sdk.SetSingleTrack(
+                        cfg.single_track.center_row,
+                        cfg.single_track.height,
+                    ),
+                    "SetSingleTrack",
+                )
+                self._check(
+                    self._sdk.SetSingleTrackHBin(hbin),
+                    f"SetSingleTrackHBin({hbin})",
+                )
+            else:
+                hbin = int(cfg.fvb_horizontal_bin)
+                self._validate_horizontal_bin(hbin, xpix, "FVB")
+                self._check(self._sdk.SetReadMode(0), "SetReadMode(FVB)")
+                self._check(self._sdk.SetFVBHBin(hbin), f"SetFVBHBin({hbin})")
+            self._frame_width = xpix // hbin
         self._check(
             self._sdk.SetShutter(1, self._shutter_code(cfg.shutter_mode), 0, 0),
             "SetShutter",

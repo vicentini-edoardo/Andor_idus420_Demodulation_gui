@@ -12,6 +12,7 @@ from idus420_gui.camera.base import (
     CameraBackend,
     CameraConfig,
     CameraError,
+    CropConfig,
     ReadMode,
     TempStatus,
     TriggerMode,
@@ -79,6 +80,9 @@ class MockBackend(CameraBackend):
     def frame_width(self) -> int:
         self._require_connected()
         xpix, _ = self._detector
+        crop = self._camera_cfg.crop
+        if crop.active:
+            return crop.crop_width // self._camera_cfg.fvb_horizontal_bin
         if self._camera_cfg.read_mode is ReadMode.SINGLE_TRACK:
             return xpix // self._camera_cfg.single_track.horizontal_bin
         return xpix // self._camera_cfg.fvb_horizontal_bin
@@ -125,8 +129,19 @@ class MockBackend(CameraBackend):
     def configure(self, cfg: CameraConfig) -> None:
         self._require_connected()
         xpix, ypix = self._detector
-        hbin = cfg.single_track.horizontal_bin if cfg.read_mode is ReadMode.SINGLE_TRACK else cfg.fvb_horizontal_bin
-        self._validate_horizontal_bin(hbin, xpix)
+        crop = cfg.crop
+        if crop.active:
+            hbin = cfg.fvb_horizontal_bin
+            if crop.crop_width < 1 or crop.crop_width > xpix:
+                raise CameraError(f"Crop width {crop.crop_width} must be 1..{xpix}.")
+            if crop.crop_height < 1 or crop.crop_height > ypix:
+                raise CameraError(f"Crop height {crop.crop_height} must be 1..{ypix}.")
+            if crop.vbin < 1:
+                raise CameraError("Crop vbin must be >= 1.")
+            self._validate_horizontal_bin(hbin, crop.crop_width)
+        else:
+            hbin = cfg.single_track.horizontal_bin if cfg.read_mode is ReadMode.SINGLE_TRACK else cfg.fvb_horizontal_bin
+            self._validate_horizontal_bin(hbin, xpix)
         if cfg.read_mode is ReadMode.SINGLE_TRACK:
             st = cfg.single_track
             if st.height < 1:
@@ -169,6 +184,7 @@ class MockBackend(CameraBackend):
             read_mode=self._camera_cfg.read_mode,
             fvb_horizontal_bin=self._camera_cfg.fvb_horizontal_bin,
             single_track=self._camera_cfg.single_track,
+            crop=self._camera_cfg.crop,
         )
         self._n_kinetics = int(n_kinetics)
         if trigger is TriggerMode.INTERNAL:
@@ -241,27 +257,27 @@ class MockBackend(CameraBackend):
 
     def _make_frame(self) -> np.ndarray:
         xpix, _ = self._detector
-        x = np.arange(xpix, dtype=np.float64)
-        # Use integer frame counter for phase so results are deterministic
-        # regardless of wall-clock timing or system load.
+        crop = self._camera_cfg.crop
+        width = crop.crop_width if crop.active else xpix
+        x = np.arange(width, dtype=np.float64)
         t = self._frame_counter / self._spectrum_cfg.sample_rate_hz
         self._frame_counter += 1
 
-        spectrum = np.full(xpix, self._spectrum_cfg.baseline, dtype=np.float64)
+        spectrum = np.full(width, self._spectrum_cfg.baseline, dtype=np.float64)
         spectrum += 900.0 * np.exp(-0.5 * ((x - 220.0) / 9.0) ** 2)
         modulation = 1.0 + self._spectrum_cfg.modulation_depth * np.sin(
             2.0 * np.pi * self._spectrum_cfg.true_modulation_hz * t
         )
         spectrum += 1400.0 * modulation * np.exp(-0.5 * ((x - 520.0) / 14.0) ** 2)
         spectrum += 700.0 * np.exp(-0.5 * ((x - 790.0) / 20.0) ** 2)
-        spectrum += self._rng.normal(0.0, self._spectrum_cfg.noise_sigma, size=xpix)
+        spectrum += self._rng.normal(0.0, self._spectrum_cfg.noise_sigma, size=width)
         hbin = (
             self._camera_cfg.single_track.horizontal_bin
-            if self._camera_cfg.read_mode is ReadMode.SINGLE_TRACK
+            if (not crop.active and self._camera_cfg.read_mode is ReadMode.SINGLE_TRACK)
             else self._camera_cfg.fvb_horizontal_bin
         )
         if hbin > 1:
-            spectrum = spectrum.reshape(xpix // hbin, hbin).sum(axis=1)
+            spectrum = spectrum.reshape(width // hbin, hbin).sum(axis=1)
         return np.clip(spectrum, 0, np.iinfo(np.uint16).max).astype(np.uint16)
 
     def _require_connected(self) -> None:

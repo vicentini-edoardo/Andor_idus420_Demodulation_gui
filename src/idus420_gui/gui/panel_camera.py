@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QSettings, pyqtSignal
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QGridLayout,
@@ -21,6 +22,7 @@ from idus420_gui.camera.base import (
     CameraBackend,
     CameraConfig,
     CameraError,
+    CropConfig,
     ReadMode,
     ShutterMode,
     SingleTrackConfig,
@@ -144,6 +146,31 @@ class CameraPanel(QWidget):
         self._st_height_label = QLabel("Track height")
         self._hbin_label = QLabel("H bin")
 
+        self.crop_check = QCheckBox("Enable Isolated Crop Mode")
+        self.crop_check.setToolTip(
+            "Reduces the CCD area for higher throughput via SetIsolatedCropMode.\n"
+            "On the iDus only FVB read mode is supported."
+        )
+
+        self.crop_height_spin = QSpinBox()
+        self.crop_height_spin.setRange(1, 9999)
+        self.crop_height_spin.setValue(50)
+        self.crop_height_spin.setSuffix(" px")
+
+        self.crop_width_spin = QSpinBox()
+        self.crop_width_spin.setRange(1, 9999)
+        self.crop_width_spin.setValue(1024)
+        self.crop_width_spin.setSuffix(" px")
+
+        self.crop_vbin_spin = QSpinBox()
+        self.crop_vbin_spin.setRange(1, 9999)
+        self.crop_vbin_spin.setValue(1)
+        self.crop_vbin_spin.setSuffix(" px")
+
+        self._crop_height_label = QLabel("Crop height")
+        self._crop_width_label = QLabel("Crop width")
+        self._crop_vbin_label = QLabel("Crop V bin")
+
         self.hs_combo = QComboBox()
         self.vs_combo = QComboBox()
         self.preamp_combo = QComboBox()
@@ -189,9 +216,22 @@ class CameraPanel(QWidget):
         config_grid.addWidget(QLabel("Shutter"), 4, 0)
         config_grid.addWidget(self.shutter_combo, 4, 1)
 
-        # Row 5: Apply button (spans all cols) + actual timings
-        config_grid.addWidget(self.apply_button, 5, 0, 1, 2)
-        config_grid.addWidget(self.actual_label, 5, 2, 1, 2)
+        # Row 5: Crop mode enable (spans all cols)
+        config_grid.addWidget(self.crop_check, 5, 0, 1, 4)
+
+        # Row 6: Crop height | Crop width
+        config_grid.addWidget(self._crop_height_label, 6, 0)
+        config_grid.addWidget(self.crop_height_spin, 6, 1)
+        config_grid.addWidget(self._crop_width_label, 6, 2)
+        config_grid.addWidget(self.crop_width_spin, 6, 3)
+
+        # Row 7: Crop vbin
+        config_grid.addWidget(self._crop_vbin_label, 7, 0)
+        config_grid.addWidget(self.crop_vbin_spin, 7, 1)
+
+        # Row 8: Apply button (spans all cols) + actual timings
+        config_grid.addWidget(self.apply_button, 8, 0, 1, 2)
+        config_grid.addWidget(self.actual_label, 8, 2, 1, 2)
 
         right_col = QVBoxLayout()
         right_col.setSpacing(10)
@@ -209,16 +249,21 @@ class CameraPanel(QWidget):
         self.exposure_spin.valueChanged.connect(self.exposure_changed.emit)
         self.read_mode_combo.currentIndexChanged.connect(self._on_read_mode_changed)
         self.backend_combo.currentIndexChanged.connect(self._update_hbin_limits)
+        self.crop_check.stateChanged.connect(self._on_crop_changed)
 
         for widget in [
             self.hs_combo, self.vs_combo, self.preamp_combo,
             self.shutter_combo, self.read_mode_combo,
         ]:
             widget.currentIndexChanged.connect(self._mark_pending)
-        for spin in [self.exposure_spin, self.st_center_spin, self.st_height_spin, self.hbin_spin]:
+        for spin in [
+            self.exposure_spin, self.st_center_spin, self.st_height_spin, self.hbin_spin,
+            self.crop_height_spin, self.crop_width_spin, self.crop_vbin_spin,
+        ]:
             spin.valueChanged.connect(self._mark_pending)
 
         self._on_read_mode_changed()
+        self._on_crop_changed()
         self._update_hbin_limits()
         self._set_config_enabled(False)
 
@@ -251,8 +296,19 @@ class CameraPanel(QWidget):
         self._st_height_label.setVisible(is_st)
         self._hbin_label.setText("ST H bin" if is_st else "FVB H bin")
 
+    def _on_crop_changed(self, _state: int = 0) -> None:
+        is_crop = self.crop_check.isChecked()
+        for w in [
+            self._crop_height_label, self.crop_height_spin,
+            self._crop_width_label, self.crop_width_spin,
+            self._crop_vbin_label, self.crop_vbin_spin,
+        ]:
+            w.setVisible(is_crop)
+        self._update_hbin_limits()
+
     def _update_hbin_limits(self) -> None:
-        if self.backend_combo.currentText() == "Andor iDus":
+        crop_active = self.crop_check.isChecked()
+        if self.backend_combo.currentText() == "Andor iDus" and not crop_active:
             self.hbin_spin.setRange(1, 1)
             self.hbin_spin.setToolTip(
                 "The iDus backend only supports horizontal bin = 1 in FVB and Single-Track."
@@ -262,7 +318,9 @@ class CameraPanel(QWidget):
         current_max = self.hbin_spin.maximum()
         if current_max <= 1:
             self.hbin_spin.setRange(1, 1024)
-        self.hbin_spin.setToolTip("")
+        self.hbin_spin.setToolTip(
+            "Horizontal binning within the crop area." if crop_active else ""
+        )
 
     def _mark_pending(self) -> None:
         if not self._pending_changes:
@@ -330,7 +388,11 @@ class CameraPanel(QWidget):
         self.st_center_spin.setRange(1, ypix)
         self.st_center_spin.setValue(ypix // 2)
         self.st_height_spin.setRange(1, ypix)
-        if isinstance(self.backend, AndorIDusBackend):
+        self.crop_height_spin.setRange(1, ypix)
+        self.crop_width_spin.setRange(1, xpix)
+        self.crop_width_spin.setValue(xpix)
+        self.crop_vbin_spin.setRange(1, ypix)
+        if isinstance(self.backend, AndorIDusBackend) and not self.crop_check.isChecked():
             self.hbin_spin.setRange(1, 1)
             self.hbin_spin.setValue(1)
             self.hbin_spin.setToolTip(
@@ -414,6 +476,12 @@ class CameraPanel(QWidget):
                 height=self.st_height_spin.value(),
                 horizontal_bin=self.hbin_spin.value(),
             ),
+            crop=CropConfig(
+                active=self.crop_check.isChecked(),
+                crop_height=self.crop_height_spin.value(),
+                crop_width=self.crop_width_spin.value(),
+                vbin=self.crop_vbin_spin.value(),
+            ),
         )
 
     def _set_config_enabled(self, enabled: bool) -> None:
@@ -431,6 +499,10 @@ class CameraPanel(QWidget):
             self.st_center_spin,
             self.st_height_spin,
             self.hbin_spin,
+            self.crop_check,
+            self.crop_height_spin,
+            self.crop_width_spin,
+            self.crop_vbin_spin,
         ]:
             widget.setEnabled(enabled)
 
@@ -448,6 +520,10 @@ class CameraPanel(QWidget):
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/st_center", self.st_center_spin.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/st_height", self.st_height_spin.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/horizontal_bin", self.hbin_spin.value())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/crop_active", self.crop_check.isChecked())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/crop_height", self.crop_height_spin.value())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/crop_width", self.crop_width_spin.value())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/crop_vbin", self.crop_vbin_spin.value())
 
     def _restore_settings(self) -> None:
         s = QSettings("idus420_gui", "CameraPanel")
@@ -473,4 +549,12 @@ class CameraPanel(QWidget):
             self.st_height_spin.setValue(int(val))
         if (val := s.value(f"{_SETTINGS_KEY_PREFIX}/horizontal_bin")) is not None:
             self.hbin_spin.setValue(int(val))
+        if (val := s.value(f"{_SETTINGS_KEY_PREFIX}/crop_active")) is not None:
+            self.crop_check.setChecked(val is True or val == "true")
+        if (val := s.value(f"{_SETTINGS_KEY_PREFIX}/crop_height")) is not None:
+            self.crop_height_spin.setValue(int(val))
+        if (val := s.value(f"{_SETTINGS_KEY_PREFIX}/crop_width")) is not None:
+            self.crop_width_spin.setValue(int(val))
+        if (val := s.value(f"{_SETTINGS_KEY_PREFIX}/crop_vbin")) is not None:
+            self.crop_vbin_spin.setValue(int(val))
         self._clear_pending()

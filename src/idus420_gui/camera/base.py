@@ -68,6 +68,21 @@ class SingleTrackConfig:
 
 
 @dataclass(frozen=True)
+class CropConfig:
+    """Parameters for isolated crop mode (SetIsolatedCropMode).
+
+    Reduces the effective CCD area for higher throughput.  On the iDus only
+    FVB read mode is supported.  hbin is taken from the parent CameraConfig's
+    fvb_horizontal_bin field so that a single control governs both modes.
+    """
+
+    active: bool = False
+    crop_height: int = 50
+    crop_width: int = 1024
+    vbin: int = 1
+
+
+@dataclass(frozen=True)
 class CameraConfig:
     """Static camera settings selected in the Camera Settings panel."""
 
@@ -81,6 +96,7 @@ class CameraConfig:
     read_mode: ReadMode = ReadMode.FVB
     fvb_horizontal_bin: int = 1
     single_track: SingleTrackConfig = SingleTrackConfig()
+    crop: CropConfig = CropConfig()
 
 
 @dataclass(frozen=True)
