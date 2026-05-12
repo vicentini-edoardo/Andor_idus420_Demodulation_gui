@@ -438,7 +438,7 @@ class CameraPanel(QWidget):
             timings = self.backend.query_timings()
             self.frame_geometry_changed.emit(self.backend.frame_width())
             t = timings
-            period = t.readout_s if t.readout_s and t.readout_s > 0 else t.kinetic_s
+            period = max(t.exposure_s, t.accumulate_s, t.kinetic_s)
             f_max = (1.0 / period) if period and period > 0 else float("nan")
             self.actual_label.setText(
                 "Actual timings: "
