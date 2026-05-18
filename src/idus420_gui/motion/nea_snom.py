@@ -48,12 +48,16 @@ class NeaSnomBackend(StageBackend):
         # Import neaspec only after connect() because the module is injected
         # by nea_tools at runtime.
         import neaspec  # noqa: PLC0415 — runtime import after connect
-        import neaspec.stream as stream_module  # noqa: PLC0415
 
         self._context = neaspec.context
-        self._stream_module = stream_module
-        self._stream_ctx = stream_module.Stream()
-        self._stream = self._stream_ctx.__enter__()
+        # neaspec.stream is not present in all SDK versions; phases fall back to nan if absent.
+        try:
+            import neaspec.stream as stream_module  # noqa: PLC0415
+            self._stream_ctx = stream_module.Stream()
+            self._stream = self._stream_ctx.__enter__()
+        except (ImportError, AttributeError):
+            self._stream_ctx = None
+            self._stream = None
         from nea_tools.microscope import motors as _motors  # noqa: PLC0415
         self._motors = _motors
         self._connected = True
@@ -129,11 +133,11 @@ class NeaSnomBackend(StageBackend):
             o_amp[h] = float(mic.OpticalAmplitude(h))
             m_amp[h] = float(mic.MechanicalAmplitude(h))
             try:
-                o_phase[h] = float(s.data[f"O{h}P"][-1])
+                o_phase[h] = float(s.data[f"O{h}P"][-1]) if s is not None else np.nan
             except Exception:  # noqa: BLE001
                 o_phase[h] = np.nan
             try:
-                m_phase[h] = float(s.data[f"M{h}P"][-1])
+                m_phase[h] = float(s.data[f"M{h}P"][-1]) if s is not None else np.nan
             except Exception:  # noqa: BLE001
                 m_phase[h] = np.nan
 
