@@ -34,23 +34,28 @@ class ScanGrid:
     nx: int
     ny: int
     order: Literal["raster_lr", "snake"] = "snake"
+    angle_deg: float = 0.0
 
     def total_points(self) -> int:
         return self.nx * self.ny
 
     def points(self) -> Iterator[StagePoint]:
         """Yield StagePoints in the configured scan order."""
+        cos_a = np.cos(np.radians(self.angle_deg))
+        sin_a = np.sin(np.radians(self.angle_deg))
         for iy in range(self.ny):
             if self.order == "snake" and iy % 2 == 1:
                 x_range = range(self.nx - 1, -1, -1)
             else:
                 x_range = range(self.nx)
             for ix in x_range:
+                dx = ix * self.x_step_nm
+                dy = iy * self.y_step_nm
                 yield StagePoint(
                     ix=ix,
                     iy=iy,
-                    x_nm=self.x_start_nm + ix * self.x_step_nm,
-                    y_nm=self.y_start_nm + iy * self.y_step_nm,
+                    x_nm=self.x_start_nm + dx * cos_a - dy * sin_a,
+                    y_nm=self.y_start_nm + dx * sin_a + dy * cos_a,
                 )
 
 

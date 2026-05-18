@@ -150,6 +150,12 @@ class ScanPanel(QWidget):
         self.ny.setRange(1, 10000)
         self.ny.setValue(5)
 
+        self.angle = QDoubleSpinBox()
+        self.angle.setRange(-180.0, 180.0)
+        self.angle.setDecimals(1)
+        self.angle.setValue(0.0)
+        self.angle.setSuffix(" °")
+
         self.total_label = QLabel("Total: 25 points")
 
         row = 0
@@ -168,6 +174,9 @@ class ScanPanel(QWidget):
         row += 1
         gg.addWidget(_lbl("Y points"), row, 0)
         gg.addWidget(self.ny, row, 1)
+        row += 1
+        gg.addWidget(_lbl("Angle"), row, 0)
+        gg.addWidget(self.angle, row, 1)
         row += 1
         gg.addWidget(self.total_label, row, 0, 1, 4)
         ctrl_layout.addWidget(grid_box)
@@ -297,6 +306,7 @@ class ScanPanel(QWidget):
             nx=nx,
             ny=ny,
             order=self.order_combo.currentData(),
+            angle_deg=self.angle.value(),
         )
         settings = self.demod_source.settings()
         # Override n_block to match user-requested frames per point.
@@ -407,6 +417,7 @@ class ScanPanel(QWidget):
             self.snom_host,
             self.x_start, self.x_step, self.nx,
             self.y_start, self.y_step, self.ny,
+            self.angle,
             self.order_combo,
             self.frames_per_point,
             self.output_dir, self.stem,
@@ -437,6 +448,7 @@ class ScanPanel(QWidget):
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/y_start", self.y_start.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/y_step", self.y_step.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/ny", self.ny.value())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/angle", self.angle.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/order", self.order_combo.currentIndex())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/frames_per_point", self.frames_per_point.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/output_dir", self.output_dir.text())
@@ -462,6 +474,8 @@ class ScanPanel(QWidget):
             self.y_step.setValue(float(v))
         if (v := _f("ny")) is not None:
             self.ny.setValue(int(v))
+        if (v := _f("angle")) is not None:
+            self.angle.setValue(float(v))
         if (v := _f("order")) is not None:
             self.order_combo.setCurrentIndex(int(v))
         if (v := _f("frames_per_point")) is not None:
