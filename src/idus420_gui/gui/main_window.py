@@ -10,6 +10,7 @@ from idus420_gui.gui.panel_acquire import AcquisitionPanel
 from idus420_gui.gui.panel_camera import CameraPanel
 from idus420_gui.gui.panel_demod import DemodPanel
 from idus420_gui.gui.panel_live import LiveSpectrumPanel
+from idus420_gui.gui.panel_scan import NEA_TOOLS_AVAILABLE, ScanPanel
 from idus420_gui.gui.widgets import LogView
 
 
@@ -28,10 +29,12 @@ class MainWindow(QMainWindow):
         self.live_panel = LiveSpectrumPanel()
         self.demod_panel = DemodPanel()
         self.acquire_panel = AcquisitionPanel(self.demod_panel)
+        self.scan_panel = ScanPanel(self.demod_panel)
         self.tabs.addTab(self.camera_panel, "Camera Settings")
         self.tabs.addTab(self.live_panel, "Live Spectrum")
         self.tabs.addTab(self.demod_panel, "Demodulation Alignment")
         self.tabs.addTab(self.acquire_panel, "Acquisition")
+        self.tabs.addTab(self.scan_panel, "Scan")
         self.setCentralWidget(self.tabs)
 
         self.connection_label = QLabel("Disconnected")
@@ -62,6 +65,8 @@ class MainWindow(QMainWindow):
         self.live_panel.running_changed.connect(self._running_changed)
         self.demod_panel.running_changed.connect(self._running_changed)
         self.acquire_panel.running_changed.connect(self._running_changed)
+        self.scan_panel.running_changed.connect(self._running_changed)
+        self.scan_panel.log_message.connect(self.log)
 
         # Acquisition-status poll: runs only when NOT acquiring (1 Hz).
         self.status_timer = QTimer(self)
@@ -90,6 +95,7 @@ class MainWindow(QMainWindow):
         self.live_panel.set_backend(backend)
         self.demod_panel.set_backend(backend)
         self.acquire_panel.set_backend(backend)
+        self.scan_panel.set_backend(backend)
 
     def _connection_changed(self, connected: bool) -> None:
         if not connected:
@@ -97,6 +103,7 @@ class MainWindow(QMainWindow):
             self.live_panel.set_backend(None)
             self.demod_panel.set_backend(None)
             self.acquire_panel.set_backend(None)
+            self.scan_panel.set_backend(None)
             self.temperature_stable = False
         self.connection_label.setText("Connected" if connected else "Disconnected")
         self.connection_label.setProperty("connected", "true" if connected else "false")
@@ -137,6 +144,7 @@ class MainWindow(QMainWindow):
         self.tabs.setTabEnabled(1, enabled or self.acquisition_running)
         self.tabs.setTabEnabled(2, enabled or self.acquisition_running)
         self.tabs.setTabEnabled(3, enabled or self.acquisition_running)
+        self.tabs.setTabEnabled(4, (enabled or self.acquisition_running) and NEA_TOOLS_AVAILABLE)
 
     def closeEvent(self, event: object) -> None:
         if self.live_panel.worker:
@@ -148,6 +156,9 @@ class MainWindow(QMainWindow):
         if self.acquire_panel.worker:
             self.acquire_panel.worker.stop()
             self.acquire_panel.worker.wait(2000)
+        if self.scan_panel.worker:
+            self.scan_panel.worker.stop()
+            self.scan_panel.worker.wait(5000)
         if self.backend:
             self.backend.disconnect()
         super().closeEvent(event)  # type: ignore[arg-type]

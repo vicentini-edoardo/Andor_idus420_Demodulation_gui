@@ -5,12 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import h5py
 import numpy as np
 
 from idus420_gui.processing.demodulation import DemodResult
+
+if TYPE_CHECKING:
+    from idus420_gui.workers.scan import ScanResult
 
 
 def _frames_sha256(frames: np.ndarray) -> str:
@@ -116,6 +119,110 @@ def save_txt(
                 dtype=np.float64,
             )
             np.savetxt(f, demod_arr, delimiter="\t", fmt="%.10g")
+
+
+def save_scan_h5(
+    path: str | Path,
+    scan: "ScanResult",
+    metadata: dict[str, Any],
+) -> None:
+    """Save a full 2-D raster scan to a single HDF5 file.
+
+    Layout::
+
+        /                            attrs: metadata JSON, grid params
+          scan/
+            coords_xy_nm    (N,2)   planned XY in scan order
+            coords_xyz_nm   (N,3)   actual motor readback
+            point_index_grid (ny,nx) linear scan index at each grid cell
+          points/
+            point_000000/
+              frames          (n_frames, frame_width) uint16 gzip
+              roi_timeseries  (n_frames,) float64
+              demod           structured dtype
+              snom_t_s        (n_samples,) float64
+              snom_xyz_nm     (n_samples,3)
+              snom_o_amp      (n_samples,6)
+              snom_o_phase    (n_samples,6)
+              snom_m_amp      (n_samples,6)
+              snom_m_phase    (n_samples,6)
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    grid = scan.grid
+    n_points = len(scan.point_results)
+
+    # Build planned coord arrays.
+    coords_xy = np.array(
+        [(pr.point.x_nm, pr.point.y_nm) for pr in scan.point_results], dtype=np.float64
+    )
+    coords_xyz = np.array(
+        [list(pr.actual_xyz_nm) for pr in scan.point_results], dtype=np.float64
+    )
+
+    # point_index_grid: ny × nx, filled with the scan-order index.
+    index_grid = np.full((grid.ny, grid.nx), -1, dtype=np.int64)
+    for scan_idx, pr in enumerate(scan.point_results):
+        index_grid[pr.point.iy, pr.point.ix] = scan_idx
+
+    meta = dict(metadata)
+    meta["grid"] = {
+        "x_start_nm": grid.x_start_nm,
+        "y_start_nm": grid.y_start_nm,
+        "x_step_nm": grid.x_step_nm,
+        "y_step_nm": grid.y_step_nm,
+        "nx": grid.nx,
+        "ny": grid.ny,
+        "order": grid.order,
+    }
+
+    with h5py.File(path, "w") as h5:
+        h5.attrs["metadata"] = json.dumps(meta, default=str)
+
+        sg = h5.create_group("scan")
+        sg.create_dataset("coords_xy_nm", data=coords_xy)
+        sg.create_dataset("coords_xyz_nm", data=coords_xyz)
+        sg.create_dataset("point_index_grid", data=index_grid)
+
+        pg = h5.create_group("points")
+        for scan_idx, pr in enumerate(scan.point_results):
+            grp = pg.create_group(f"point_{scan_idx:06d}")
+            grp.attrs["ix"] = pr.point.ix
+            grp.attrs["iy"] = pr.point.iy
+            grp.attrs["x_nm"] = pr.point.x_nm
+            grp.attrs["y_nm"] = pr.point.y_nm
+            grp.attrs["actual_x_nm"] = pr.actual_xyz_nm[0]
+            grp.attrs["actual_y_nm"] = pr.actual_xyz_nm[1]
+            grp.attrs["actual_z_nm"] = pr.actual_xyz_nm[2]
+
+            frames_u16 = np.asarray(pr.frames, dtype=np.uint16)
+            grp.create_dataset("frames", data=frames_u16, compression="gzip")
+            grp.attrs["frames_sha256"] = _frames_sha256(frames_u16)
+            grp.create_dataset(
+                "roi_timeseries",
+                data=np.asarray(pr.roi_timeseries, dtype=np.float64),
+            )
+            grp.create_dataset("demod", data=_demod_structured(pr.demod_results))
+
+            if pr.snom_samples:
+                n_s = len(pr.snom_samples)
+                t_arr = np.array([s.t_s for s in pr.snom_samples], dtype=np.float64)
+                xyz_arr = np.array([list(s.xyz_nm) for s in pr.snom_samples], dtype=np.float64)
+                o_amp_arr = np.stack([s.o_amp for s in pr.snom_samples], axis=0)
+                o_ph_arr = np.stack([s.o_phase for s in pr.snom_samples], axis=0)
+                m_amp_arr = np.stack([s.m_amp for s in pr.snom_samples], axis=0)
+                m_ph_arr = np.stack([s.m_phase for s in pr.snom_samples], axis=0)
+                grp.create_dataset("snom_t_s", data=t_arr)
+                grp.create_dataset("snom_xyz_nm", data=xyz_arr)
+                grp.create_dataset("snom_o_amp", data=o_amp_arr)
+                grp.create_dataset("snom_o_phase", data=o_ph_arr)
+                grp.create_dataset("snom_m_amp", data=m_amp_arr)
+                grp.create_dataset("snom_m_phase", data=m_ph_arr)
+            else:
+                for dname in ("snom_t_s", "snom_xyz_nm", "snom_o_amp", "snom_o_phase",
+                               "snom_m_amp", "snom_m_phase"):
+                    grp.create_dataset(dname, data=np.array([]))
 
 
 def _demod_structured(results: list[DemodResult]) -> np.ndarray:

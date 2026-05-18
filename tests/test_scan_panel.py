@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+import pytest
+
+pytest.importorskip("PyQt6")
+
+from PyQt6.QtCore import QSettings
+
+from idus420_gui.camera.mock import MockBackend
+from idus420_gui.gui.panel_demod import DemodPanel
+from idus420_gui.gui.panel_scan import ScanPanel
+
+
+def _make_panels():
+    """Create a DemodPanel + ScanPanel pair.
+
+    Callers must pass qtbot so that a QApplication exists before widget
+    construction (qtbot.addWidget() is skipped because it rejects PyQt6
+    widgets when the test runner is PySide6-backed).
+    """
+    demod = DemodPanel()
+    panel = ScanPanel(demod)
+    return demod, panel
+
+
+def test_panel_builds_without_backend(qtbot) -> None:  # type: ignore[no-untyped-def]
+    _, panel = _make_panels()
+    assert panel is not None
+
+
+def test_set_backend_accepted(qtbot) -> None:  # type: ignore[no-untyped-def]
+    _, panel = _make_panels()
+    backend = MockBackend()
+    backend.connect()
+    panel.set_backend(backend)
+    assert panel.backend is backend
+
+
+def test_start_without_backend_logs_error(qtbot) -> None:  # type: ignore[no-untyped-def]
+    _, panel = _make_panels()
+    messages: list[str] = []
+    panel.log_message.connect(messages.append)
+    panel.start()
+    assert any("No camera backend" in m for m in messages)
+
+
+def test_settings_round_trip(qtbot) -> None:  # type: ignore[no-untyped-def]
+    QSettings("idus420_gui", "ScanPanel").clear()
+
+    demod = DemodPanel()
+    p1 = ScanPanel(demod)
+    p1.nx.setValue(7)
+    p1.ny.setValue(4)
+    p1.x_step.setValue(3000.0)
+    p1.y_step.setValue(1500.0)
+    p1.snom_host.setText("custom-host")
+    p1.stem.setText("my_scan")
+    p1._save_settings()
+
+    p2 = ScanPanel(demod)
+    assert p2.nx.value() == 7
+    assert p2.ny.value() == 4
+    assert p2.x_step.value() == pytest.approx(3000.0)
+    assert p2.y_step.value() == pytest.approx(1500.0)
+    assert p2.snom_host.text() == "custom-host"
+    assert p2.stem.text() == "my_scan"
+
+
+def test_total_label_updates(qtbot) -> None:  # type: ignore[no-untyped-def]
+    _, panel = _make_panels()
+    panel.nx.setValue(4)
+    panel.ny.setValue(3)
+    assert "12" in panel.total_label.text()
+
+
+def test_stop_without_worker_does_not_crash(qtbot) -> None:  # type: ignore[no-untyped-def]
+    _, panel = _make_panels()
+    panel.stop()
+
+
+def test_running_changed_emitted_on_start(qtbot) -> None:  # type: ignore[no-untyped-def]
+    demod, panel = _make_panels()
+    backend = MockBackend()
+    backend.connect()
+    panel.set_backend(backend)
+
+    running_states: list[bool] = []
+    panel.running_changed.connect(running_states.append)
+    panel.frames_per_point.setValue(8)
+    panel.nx.setValue(1)
+    panel.ny.setValue(1)
+
+    panel.start()
+    assert panel.worker is not None
+
+    with qtbot.waitSignal(panel.worker.scan_finished, timeout=8000):
+        pass
+
+    panel.worker.wait(3000)
+    assert True in running_states

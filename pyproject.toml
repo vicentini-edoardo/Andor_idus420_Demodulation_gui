@@ -28,6 +28,10 @@ dev = [
   "ruff>=0.4,<1",
 ]
 andor = []
+snom = [
+  "nea_tools",
+  "nest_asyncio>=1.6,<2",
+]
 
 [project.scripts]
 idus420-gui = "idus420_gui.__main__:main"
