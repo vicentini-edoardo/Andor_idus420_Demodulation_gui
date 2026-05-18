@@ -82,29 +82,29 @@ class NeaSnomBackend(StageBackend):
         x_um = x_nm / 1000.0
         y_um = y_nm / 1000.0
 
-        do_wait: list[bool] = [False]
+        do_wait = [False]
 
-        def on_moved(sender, args):  # noqa: ANN001
+        def on_tip_position_moved(sender, args):  # noqa: ANN001
             do_wait[0] = False
 
-        def on_moving(sender, args):  # noqa: ANN001
+        def on_tip_position_moving(sender, args):  # noqa: ANN001
             do_wait[0] = True
 
-        ctx.Logic.TipPositionMoved += on_moved
-        ctx.Logic.TipPositionMoving += on_moving
+        ctx.Logic.TipPositionMoved += on_tip_position_moved
+        ctx.Logic.TipPositionMoving += on_tip_position_moving
         try:
-            args = nea.MoveTipPositionArgs(
+            move_args = nea.MoveTipPositionArgs(
                 nea.Geometry.Point2D(x_um, y_um),
                 speed_um_s / 1000.0,
             )
-            ctx.Logic.MoveTipPosition.Execute(args)
+            ctx.Logic.MoveTipPosition.Execute(move_args)
             sleep(_MOVE_POLL_S)
             while do_wait[0]:
                 sleep(_MOVE_POLL_S)
             sleep(0.2)
         finally:
-            ctx.Logic.TipPositionMoved -= on_moved
-            ctx.Logic.TipPositionMoving -= on_moving
+            ctx.Logic.TipPositionMoved -= on_tip_position_moved
+            ctx.Logic.TipPositionMoving -= on_tip_position_moving
 
     def read_xyz_nm(self) -> tuple[float, float, float]:
         raise NotImplementedError("Ask Vincent for the position readback API.")
