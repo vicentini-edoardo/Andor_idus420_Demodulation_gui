@@ -61,10 +61,10 @@ class ScanPanel(QWidget):
         self._restore_settings()
 
         if not NEA_TOOLS_AVAILABLE:
-            self.setEnabled(False)
-            self.setToolTip(
-                "nea_tools / nest_asyncio are not installed. "
-                "Install with:  pip install 'idus420_gui[snom]'"
+            self._show_error(
+                "SNOM stage backend unavailable: nea_tools / nest_asyncio not installed. "
+                "Install with:  pip install 'idus420_gui[snom]'  —  "
+                "You can edit scan parameters but cannot start a scan."
             )
 
     def set_backend(self, backend: CameraBackend | None) -> None:
@@ -87,6 +87,19 @@ class ScanPanel(QWidget):
         ctrl_layout = QVBoxLayout(ctrl_container)
         ctrl_layout.setContentsMargins(8, 8, 8, 8)
         ctrl_layout.setSpacing(8)
+
+        # Error banner (hidden by default)
+        self.error_banner = QLabel()
+        self.error_banner.setWordWrap(True)
+        self.error_banner.setStyleSheet(
+            f"color: {theme.ACCENT_ERR};"
+            f"background-color: {theme.SURFACE_ALT};"
+            f"border: 1px solid {theme.ACCENT_ERR};"
+            "border-radius: 4px;"
+            "padding: 6px;"
+        )
+        self.error_banner.hide()
+        ctrl_layout.addWidget(self.error_banner)
 
         # SNOM connection
         conn_box = QGroupBox("SNOM Connection")
@@ -260,11 +273,20 @@ class ScanPanel(QWidget):
     # ------------------------------------------------------------------
 
     def start(self) -> None:
+        if not NEA_TOOLS_AVAILABLE or NeaSnomBackend is None:
+            self._show_error(
+                "Cannot start scan: SNOM stage backend unavailable. "
+                "Install with:  pip install 'idus420_gui[snom]'"
+            )
+            return
         if not self.backend:
-            self.log_message.emit("No camera backend is connected — cannot start scan.")
+            self._show_error(
+                "No camera backend connected — cannot start scan."
+            )
             return
         if not self.demod_source._validate_roi():  # noqa: SLF001
             return
+        self._clear_error()
 
         nx, ny = self.nx.value(), self.ny.value()
         grid = ScanGrid(
@@ -304,11 +326,7 @@ class ScanPanel(QWidget):
         }
         metadata["snom_host"] = self.snom_host.text()
 
-        if NEA_TOOLS_AVAILABLE and NeaSnomBackend is not None:
-            stage = NeaSnomBackend()
-        else:
-            from idus420_gui.motion.mock import MockStageBackend  # noqa: PLC0415
-            stage = MockStageBackend()
+        stage = NeaSnomBackend()
 
         self._scan_map_data = np.zeros((ny, nx), dtype=np.float64)
         self.map_image.setImage(self._scan_map_data.T)
@@ -374,6 +392,15 @@ class ScanPanel(QWidget):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _show_error(self, msg: str) -> None:
+        self.error_banner.setText(msg)
+        self.error_banner.show()
+        self.log_message.emit(msg)
+
+    def _clear_error(self) -> None:
+        self.error_banner.hide()
+        self.error_banner.clear()
 
     def _set_running_ui(self, running: bool) -> None:
         for w in [
