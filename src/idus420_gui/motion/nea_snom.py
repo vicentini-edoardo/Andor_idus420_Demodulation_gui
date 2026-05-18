@@ -4,6 +4,7 @@ from __future__ import annotations
 
 try:
     import asyncio
+    from time import sleep
 
     import nest_asyncio
     import nea_tools
@@ -17,10 +18,12 @@ import numpy as np
 from idus420_gui.motion.base import SnomSample, StageBackend, StageError
 
 _N_HARMONICS = 6
+_DEFAULT_SPEED_UM_S = 0.2   # µm/s tip speed
+_MOVE_POLL_S = 0.1          # seconds between do_wait polls
 
 
 class NeaSnomBackend(StageBackend):
-    """Stage backend that wraps nea_tools for the SNOM Sample motor."""
+    """Stage backend that wraps nea_tools / neaspec for SNOM tip motion."""
 
     def __init__(self) -> None:
         if not NEA_TOOLS_AVAILABLE:
@@ -30,9 +33,10 @@ class NeaSnomBackend(StageBackend):
             )
         self._connected = False
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._stream = None   # neaspec stream.Stream context-manager object
-        self._context = None  # neaspec.context module reference
-        self._motors = None   # nea_tools.microscope.motors, loaded after connect
+        self._context = None   # neaspec.context, injected by nea_tools after connect
+        self._nea = None       # Nea.Client.SharedDefinitions module
+        self._stream = None    # neaspec.stream.Stream object (optional)
+        self._stream_ctx = None
 
     # ------------------------------------------------------------------
     # Connection
@@ -45,12 +49,14 @@ class NeaSnomBackend(StageBackend):
         self._loop.run_until_complete(
             nea_tools.connect(host, fingerprint=None, path_to_dll="")
         )
-        # Import neaspec only after connect() because the module is injected
-        # by nea_tools at runtime.
-        import neaspec  # noqa: PLC0415 — runtime import after connect
+        # neaspec is injected at runtime by nea_tools after connect()
+        import neaspec  # noqa: PLC0415
+        import Nea.Client.SharedDefinitions as nea  # noqa: PLC0415
 
         self._context = neaspec.context
-        # neaspec.stream is not present in all SDK versions; phases fall back to nan if absent.
+        self._nea = nea
+
+        # neaspec.stream is optional (not present in all SDK versions)
         try:
             import neaspec.stream as stream_module  # noqa: PLC0415
             self._stream_ctx = stream_module.Stream()
@@ -58,8 +64,7 @@ class NeaSnomBackend(StageBackend):
         except (ImportError, AttributeError):
             self._stream_ctx = None
             self._stream = None
-        from nea_tools.microscope import motors as _motors  # noqa: PLC0415
-        self._motors = _motors
+
         self._connected = True
 
     def disconnect(self) -> None:
@@ -81,35 +86,46 @@ class NeaSnomBackend(StageBackend):
         return self._connected
 
     # ------------------------------------------------------------------
-    # Motion
+    # Motion  (uses context.Logic.MoveTipPosition per developer API)
     # ------------------------------------------------------------------
 
-    def goto_xy_nm(self, x_nm: float, y_nm: float) -> None:
+    def goto_xy_nm(self, x_nm: float, y_nm: float, speed_um_s: float = _DEFAULT_SPEED_UM_S) -> None:
+        """Move tip to (x_nm, y_nm) and block until the move completes."""
         self._require_connected()
-        # Use the Sample motor via context-manager to ensure cleanup.
-        # ActiveMotorGotoXyzAsync expects a System.Point3D equivalent;
-        # nea_tools exposes it as a Python tuple/named structure.
-        loop = self._loop
-        with self._motors.Sample() as sample:
-            sample.activate()
-            result = loop.run_until_complete(
-                sample.ActiveMotorGotoXyzAsync((x_nm, 0.0, 0.0))
+        nea = self._nea
+        ctx = self._context
+
+        # Coordinates are in µm for MoveTipPositionArgs
+        x_um = x_nm / 1000.0
+        y_um = y_nm / 1000.0
+
+        do_wait: list[bool] = [False]  # mutable container so closure can write it
+
+        def on_moved(sender, args):  # noqa: ANN001
+            do_wait[0] = False
+
+        def on_moving(sender, args):  # noqa: ANN001
+            do_wait[0] = True
+
+        ctx.Logic.TipPositionMoved += on_moved
+        ctx.Logic.TipPositionMoving += on_moving
+        try:
+            args = nea.MoveTipPositionArgs(
+                nea.Geometry.Point2D(x_um, y_um),
+                speed_um_s / 1000.0,   # SDK expects µm/ms
             )
-        if not result:
-            raise StageError(f"Motor failed to reach target ({x_nm}, {0.0})")
-        # Move Y separately — or use combined move if supported.
-        with self._motors.Sample() as sample:
-            sample.activate()
-            result = loop.run_until_complete(
-                sample.ActiveMotorGotoXyzAsync((x_nm, y_nm, 0.0))
-            )
-        if not result:
-            raise StageError(f"Motor failed to reach target ({x_nm}, {y_nm})")
+            ctx.Logic.MoveTipPosition.Execute(args)
+            sleep(_MOVE_POLL_S)
+            while do_wait[0]:
+                sleep(_MOVE_POLL_S)
+            sleep(0.2)   # settling time recommended by developer
+        finally:
+            ctx.Logic.TipPositionMoved -= on_moved
+            ctx.Logic.TipPositionMoving -= on_moving
 
     def read_xyz_nm(self) -> tuple[float, float, float]:
         self._require_connected()
-        loop = self._loop
-        pos = loop.run_until_complete(
+        pos = self._loop.run_until_complete(
             self._context.Microscope.GetActiveMotorDistanceToReferenceXyz()
         )
         return float(pos.X), float(pos.Y), float(pos.Z)
