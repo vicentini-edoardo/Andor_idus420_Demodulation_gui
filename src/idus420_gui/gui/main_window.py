@@ -10,7 +10,7 @@ from idus420_gui.gui.panel_acquire import AcquisitionPanel
 from idus420_gui.gui.panel_camera import CameraPanel
 from idus420_gui.gui.panel_demod import DemodPanel
 from idus420_gui.gui.panel_live import LiveSpectrumPanel
-from idus420_gui.gui.panel_scan import NEA_TOOLS_AVAILABLE, ScanPanel
+from idus420_gui.gui.panel_scan import ScanPanel
 from idus420_gui.gui.widgets import LogView
 
 
@@ -144,7 +144,7 @@ class MainWindow(QMainWindow):
         self.tabs.setTabEnabled(1, enabled or self.acquisition_running)
         self.tabs.setTabEnabled(2, enabled or self.acquisition_running)
         self.tabs.setTabEnabled(3, enabled or self.acquisition_running)
-        self.tabs.setTabEnabled(4, (enabled or self.acquisition_running) and NEA_TOOLS_AVAILABLE)
+        self.tabs.setTabEnabled(4, enabled or self.acquisition_running)
 
     def closeEvent(self, event: object) -> None:
         if self.live_panel.worker:
