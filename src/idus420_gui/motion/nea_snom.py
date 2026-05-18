@@ -33,7 +33,7 @@ class NeaSnomBackend(StageBackend):
             )
         self._connected = False
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._context = None   # neaspec.context, injected by nea_tools after connect
+        self._context = None   # neaspec.context, injected after connect
         self._nea = None       # Nea.Client.SharedDefinitions module
         self._stream = None    # neaspec.stream.Stream object (optional)
         self._stream_ctx = None
@@ -43,8 +43,7 @@ class NeaSnomBackend(StageBackend):
     # ------------------------------------------------------------------
 
     def connect(self, host: str = "nea-server") -> None:
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
+        self._loop = asyncio.get_event_loop()
         nest_asyncio.apply(self._loop)
         self._loop.run_until_complete(
             nea_tools.connect(host, fingerprint=None, path_to_dll="")
@@ -89,7 +88,9 @@ class NeaSnomBackend(StageBackend):
     # Motion  (uses context.Logic.MoveTipPosition per developer API)
     # ------------------------------------------------------------------
 
-    def goto_xy_nm(self, x_nm: float, y_nm: float, speed_um_s: float = _DEFAULT_SPEED_UM_S) -> None:
+    def goto_xy_nm(
+        self, x_nm: float, y_nm: float, speed_um_s: float = _DEFAULT_SPEED_UM_S
+    ) -> None:
         """Move tip to (x_nm, y_nm) and block until the move completes."""
         self._require_connected()
         nea = self._nea
@@ -99,7 +100,7 @@ class NeaSnomBackend(StageBackend):
         x_um = x_nm / 1000.0
         y_um = y_nm / 1000.0
 
-        do_wait: list[bool] = [False]  # mutable container so closure can write it
+        do_wait: list[bool] = [False]  # list so the closure can write it
 
         def on_moved(sender, args):  # noqa: ANN001
             do_wait[0] = False
@@ -125,9 +126,7 @@ class NeaSnomBackend(StageBackend):
 
     def read_xyz_nm(self) -> tuple[float, float, float]:
         self._require_connected()
-        pos = self._loop.run_until_complete(
-            self._context.Microscope.GetActiveMotorDistanceToReferenceXyz()
-        )
+        pos = self._context.Microscope.GetActiveMotorDistanceToReferenceXyz()
         return float(pos.X), float(pos.Y), float(pos.Z)
 
     # ------------------------------------------------------------------
@@ -149,11 +148,15 @@ class NeaSnomBackend(StageBackend):
             o_amp[h] = float(mic.OpticalAmplitude(h))
             m_amp[h] = float(mic.MechanicalAmplitude(h))
             try:
-                o_phase[h] = float(s.data[f"O{h}P"][-1]) if s is not None else np.nan
+                o_phase[h] = (
+                    float(s.data[f"O{h}P"][-1]) if s is not None else np.nan
+                )
             except Exception:  # noqa: BLE001
                 o_phase[h] = np.nan
             try:
-                m_phase[h] = float(s.data[f"M{h}P"][-1]) if s is not None else np.nan
+                m_phase[h] = (
+                    float(s.data[f"M{h}P"][-1]) if s is not None else np.nan
+                )
             except Exception:  # noqa: BLE001
                 m_phase[h] = np.nan
 
