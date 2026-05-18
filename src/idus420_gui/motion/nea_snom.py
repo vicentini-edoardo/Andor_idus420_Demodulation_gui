@@ -7,7 +7,6 @@ try:
 
     import nest_asyncio
     import nea_tools
-    from nea_tools.microscope import motors as _nea_motors
 
     NEA_TOOLS_AVAILABLE = True
 except ImportError:
@@ -33,6 +32,7 @@ class NeaSnomBackend(StageBackend):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stream = None   # neaspec stream.Stream context-manager object
         self._context = None  # neaspec.context module reference
+        self._motors = None   # nea_tools.microscope.motors, loaded after connect
 
     # ------------------------------------------------------------------
     # Connection
@@ -53,6 +53,8 @@ class NeaSnomBackend(StageBackend):
         self._stream_module = stream_module
         self._stream_ctx = stream_module.Stream()
         self._stream = self._stream_ctx.__enter__()
+        from nea_tools.microscope import motors as _motors  # noqa: PLC0415
+        self._motors = _motors
         self._connected = True
 
     def disconnect(self) -> None:
@@ -83,7 +85,7 @@ class NeaSnomBackend(StageBackend):
         # ActiveMotorGotoXyzAsync expects a System.Point3D equivalent;
         # nea_tools exposes it as a Python tuple/named structure.
         loop = self._loop
-        with _nea_motors.Sample() as sample:
+        with self._motors.Sample() as sample:
             sample.activate()
             result = loop.run_until_complete(
                 sample.ActiveMotorGotoXyzAsync((x_nm, 0.0, 0.0))
@@ -91,7 +93,7 @@ class NeaSnomBackend(StageBackend):
         if not result:
             raise StageError(f"Motor failed to reach target ({x_nm}, {0.0})")
         # Move Y separately — or use combined move if supported.
-        with _nea_motors.Sample() as sample:
+        with self._motors.Sample() as sample:
             sample.activate()
             result = loop.run_until_complete(
                 sample.ActiveMotorGotoXyzAsync((x_nm, y_nm, 0.0))

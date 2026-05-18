@@ -338,7 +338,7 @@ class ScanPanel(QWidget):
         self.worker.point_finished.connect(self._on_point_finished)
         self.worker.point_data_ready.connect(self._on_point_data)
         self.worker.scan_finished.connect(self._on_scan_finished)
-        self.worker.error.connect(self.log_message.emit)
+        self.worker.error.connect(self._show_error)
         self.worker.worker_finished.connect(lambda: self._set_running_ui(False))
 
         self._set_running_ui(True)
