@@ -115,11 +115,11 @@ class NeaSnomBackend(StageBackend):
 
     def read_optical_amplitude(self, harmonic: int) -> float:
         self._require_connected()
-        return float(self._context.Microscope.Py.OpticalAmplitude(harmonic))
+        return float(self._context.Microscope.Py.OpticalAmplitude[harmonic])
 
     def read_mechanical_amplitude(self, harmonic: int) -> float:
         self._require_connected()
-        return float(self._context.Microscope.Py.MechanicalAmplitude(harmonic))
+        return float(self._context.Microscope.Py.MechanicalAmplitude[harmonic])
 
     def read_sample(self, t_s: float) -> SnomSample:
         self._require_connected()
