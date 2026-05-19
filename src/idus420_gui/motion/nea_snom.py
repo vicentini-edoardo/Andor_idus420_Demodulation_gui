@@ -48,8 +48,8 @@ class NeaSnomBackend(StageBackend):
             nea_tools.connect(host, fingerprint=None, path_to_dll="")
         )
         import neaspec  # noqa: PLC0415
-        import neaspec.stream as stream  # noqa: PLC0415
         import Nea.Client.SharedDefinitions as nea  # noqa: PLC0415
+        from nea_tools.microscope import stream  # noqa: PLC0415
 
         self._context = neaspec.context
         self._nea = nea
@@ -107,7 +107,13 @@ class NeaSnomBackend(StageBackend):
             ctx.Logic.TipPositionMoving -= on_tip_position_moving
 
     def read_xyz_nm(self) -> tuple[float, float, float]:
-        raise NotImplementedError("Ask Vincent for the position readback API.")
+        self._require_connected()
+        with self._stream_module.Stream() as s:
+            sleep(0.025)  # wait for the first ~20 ms batch to arrive
+            x_nm = float(s.data["AveragedX"][-1]) * 1000.0
+            y_nm = float(s.data["AveragedY"][-1]) * 1000.0
+            z_nm = float(s.data["AveragedZ"][-1]) * 1000.0
+        return (x_nm, y_nm, z_nm)
 
     # ------------------------------------------------------------------
     # Signal readout
@@ -121,33 +127,42 @@ class NeaSnomBackend(StageBackend):
         self._require_connected()
         return float(self._context.Microscope.Py.MechanicalAmplitude[harmonic])
 
-    def read_sample(self, t_s: float) -> SnomSample:
+    def read_sample(self, t_s: float, t_integ_s: float = 0.05) -> SnomSample:
         self._require_connected()
-        o_amp = np.empty(_N_HARMONICS, dtype=np.float64)
-        o_phase = np.empty(_N_HARMONICS, dtype=np.float64)
-        m_amp = np.empty(_N_HARMONICS, dtype=np.float64)
-        m_phase = np.empty(_N_HARMONICS, dtype=np.float64)
 
-        with self._stream_module.Stream() as s:
-            for h in range(_N_HARMONICS):
-                o_amp[h] = self.read_optical_amplitude(h)
-                m_amp[h] = self.read_mechanical_amplitude(h)
+        keys = (
+            [f"O{h}A" for h in range(_N_HARMONICS)]
+            + [f"O{h}P" for h in range(_N_HARMONICS)]
+            + [f"M{h}A" for h in range(_N_HARMONICS)]
+            + [f"M{h}P" for h in range(_N_HARMONICS)]
+            + ["AveragedX", "AveragedY", "AveragedZ"]
+        )
+        accum: dict[str, list[float]] = {k: [] for k in keys}
+
+        def _cb(data) -> None:  # noqa: ANN001
+            for k in keys:
                 try:
-                    o_phase[h] = float(s.data[f"O{h}P"][-1])
+                    accum[k].append(float(data[k][-1]))
                 except Exception:  # noqa: BLE001
-                    o_phase[h] = np.nan
-                try:
-                    m_phase[h] = float(s.data[f"M{h}P"][-1])
-                except Exception:  # noqa: BLE001
-                    m_phase[h] = np.nan
+                    pass
+
+        with self._stream_module.Stream(callback=_cb):
+            sleep(t_integ_s)
+
+        def _avg(vals: list[float]) -> float:
+            return float(np.nanmean(vals)) if vals else np.nan
+
+        x_nm = _avg(accum["AveragedX"]) * 1000.0
+        y_nm = _avg(accum["AveragedY"]) * 1000.0
+        z_nm = _avg(accum["AveragedZ"]) * 1000.0
 
         return SnomSample(
             t_s=t_s,
-            xyz_nm=(np.nan, np.nan, np.nan),
-            o_amp=o_amp,
-            o_phase=o_phase,
-            m_amp=m_amp,
-            m_phase=m_phase,
+            xyz_nm=(x_nm, y_nm, z_nm),
+            o_amp=np.array([_avg(accum[f"O{h}A"]) for h in range(_N_HARMONICS)]),
+            o_phase=np.array([_avg(accum[f"O{h}P"]) for h in range(_N_HARMONICS)]),
+            m_amp=np.array([_avg(accum[f"M{h}A"]) for h in range(_N_HARMONICS)]),
+            m_phase=np.array([_avg(accum[f"M{h}P"]) for h in range(_N_HARMONICS)]),
         )
 
     # ------------------------------------------------------------------

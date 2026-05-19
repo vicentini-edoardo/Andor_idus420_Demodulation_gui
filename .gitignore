@@ -48,3 +48,6 @@ ATMCD*.lib
 *.tar.gz
 MANIFEST
 pip-wheel-metadata/
+
+# Documentation
+SDK_Documentation.md
