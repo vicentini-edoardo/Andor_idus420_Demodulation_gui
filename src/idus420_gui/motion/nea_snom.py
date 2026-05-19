@@ -144,7 +144,7 @@ class NeaSnomBackend(StageBackend):
                 try:
                     accum[k].append(float(data[k][-1]))
                 except Exception:  # noqa: BLE001
-                    pass
+                    pass  # missed samples not appended; per-key count stays correct
 
         with self._stream_module.Stream(callback=_cb):
             sleep(t_integ_s)
@@ -156,13 +156,14 @@ class NeaSnomBackend(StageBackend):
         y_nm = _avg(accum["AveragedY"]) * 1000.0
         z_nm = _avg(accum["AveragedZ"]) * 1000.0
 
+        n = _N_HARMONICS
         return SnomSample(
             t_s=t_s,
             xyz_nm=(x_nm, y_nm, z_nm),
-            o_amp=np.array([_avg(accum[f"O{h}A"]) for h in range(_N_HARMONICS)]),
-            o_phase=np.array([_avg(accum[f"O{h}P"]) for h in range(_N_HARMONICS)]),
-            m_amp=np.array([_avg(accum[f"M{h}A"]) for h in range(_N_HARMONICS)]),
-            m_phase=np.array([_avg(accum[f"M{h}P"]) for h in range(_N_HARMONICS)]),
+            o_amp=np.array([_avg(accum[f"O{h}A"]) for h in range(n)]),
+            o_phase=np.array([_avg(accum[f"O{h}P"]) for h in range(n)]),
+            m_amp=np.array([_avg(accum[f"M{h}A"]) for h in range(n)]),
+            m_phase=np.array([_avg(accum[f"M{h}P"]) for h in range(n)]),
         )
 
     # ------------------------------------------------------------------
