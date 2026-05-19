@@ -26,8 +26,8 @@ class PointResult:
     actual_xyz_nm: tuple[float, float, float]
     frames: np.ndarray                   # (n_frames, frame_width) uint16
     roi_timeseries: np.ndarray           # (n_frames,) float64
-    demod_results: list[DemodResult]
-    snom_samples: list[SnomSample]       # one sample interleaved after each Andor frame
+    demod_results: list[DemodResult | None]  # index 0 = 1ω, index 1 = 2ω per n_block chunk
+    snom_samples: list[SnomSample]       # one per frame (stream_continuous) or one total
 
 
 @dataclass
@@ -150,17 +150,21 @@ class ScanWorker(QThread):
                         chunk = np.asarray(roi_buffer, dtype=np.float64)
                         roi_buffer.clear()
                         if len(chunk) >= 4:
-                            try:
-                                dr = demodulate(
-                                    chunk,
-                                    self.settings.trigger_frequency_hz,
-                                    self.settings.f_expected,
-                                    self.settings.f_search_halfwidth,
-                                    self.settings.window,
-                                )
-                                demod_results.append(dr)
-                            except Exception:  # noqa: BLE001
-                                pass
+                            for f_target in (
+                                self.settings.f_expected,
+                                2.0 * self.settings.f_expected,
+                            ):
+                                try:
+                                    dr = demodulate(
+                                        chunk,
+                                        self.settings.trigger_frequency_hz,
+                                        f_target,
+                                        self.settings.f_search_halfwidth,
+                                        self.settings.window,
+                                    )
+                                    demod_results.append(dr)
+                                except Exception:  # noqa: BLE001
+                                    demod_results.append(None)
 
                 # Stop SNOM thread and collect samples
                 if use_stream:

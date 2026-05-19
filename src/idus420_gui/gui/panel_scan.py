@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -55,7 +54,12 @@ class ScanPanel(QWidget):
         self.demod_source = demod_source
         self.worker: ScanWorker | None = None
 
-        self._scan_map_data: np.ndarray | None = None  # (ny, nx) peak amplitudes
+        self._map_demod_1w: np.ndarray | None = None
+        self._map_demod_2w: np.ndarray | None = None
+        self._map_m1a: np.ndarray | None = None
+        self._map_m1p: np.ndarray | None = None
+        self._scan_is_line: bool = False
+        self._scan_line_coords: np.ndarray | None = None  # nm positions along varying axis
 
         self._build_ui()
         self._restore_settings()
@@ -246,22 +250,35 @@ class ScanPanel(QWidget):
         ctrl_container.setMaximumWidth(540)
         splitter.addWidget(ctrl_container)
 
-        # ---- Right: scan map ----
+        # ---- Right: scan maps (2×2 grid) ----
         plot_container = QWidget()
         plot_lay = QVBoxLayout(plot_container)
         plot_lay.setContentsMargins(4, 4, 4, 4)
         self.map_widget = pg.GraphicsLayoutWidget()
         self.map_widget.setBackground(theme.BG)
-        self.map_plot = self.map_widget.addPlot(title="Scan map (demod peak amplitude)")
-        theme._style_plot_item(self.map_plot)  # noqa: SLF001
-        self.map_plot.setAspectLocked(True)
-        self.map_image = pg.ImageItem()
-        self.map_plot.addItem(self.map_image)
-        self.map_colorbar = pg.ColorBarItem(
-            colorMap="viridis",
-            label="Peak amplitude",
-        )
-        self.map_colorbar.setImageItem(self.map_image, insert_in=self.map_plot)
+
+        _map_specs = [
+            (0, 0, "Demod amp @ 1ω", "viridis", "Peak amplitude",
+             "_map_plot_1w", "_map_image_1w", "_map_cb_1w"),
+            (0, 1, "Demod amp @ 2ω", "viridis", "Peak amplitude",
+             "_map_plot_2w", "_map_image_2w", "_map_cb_2w"),
+            (1, 0, "SNOM M1A", "viridis", "Amplitude",
+             "_map_plot_m1a", "_map_image_m1a", "_map_cb_m1a"),
+            (1, 1, "SNOM M1P", "twilight", "Phase (rad)",
+             "_map_plot_m1p", "_map_image_m1p", "_map_cb_m1p"),
+        ]
+        for row, col, title, cmap, label, attr_plot, attr_img, attr_cb in _map_specs:
+            plot = self.map_widget.addPlot(row=row, col=col, title=title)
+            theme._style_plot_item(plot)  # noqa: SLF001
+            plot.setAspectLocked(True)
+            img = pg.ImageItem()
+            plot.addItem(img)
+            cb = pg.ColorBarItem(colorMap=cmap, label=label)
+            cb.setImageItem(img, insert_in=plot)
+            setattr(self, attr_plot, plot)
+            setattr(self, attr_img, img)
+            setattr(self, attr_cb, cb)
+
         plot_lay.addWidget(self.map_widget)
         splitter.addWidget(plot_container)
 
@@ -338,8 +355,14 @@ class ScanPanel(QWidget):
 
         stage = NeaSnomBackend()
 
-        self._scan_map_data = np.zeros((ny, nx), dtype=np.float64)
-        self.map_image.setImage(self._scan_map_data.T)
+        nan = np.full((ny, nx), np.nan, dtype=np.float64)
+        self._map_demod_1w = nan.copy()
+        self._map_demod_2w = nan.copy()
+        self._map_m1a = nan.copy()
+        self._map_m1p = nan.copy()
+
+        self._scan_is_line = (nx == 1 or ny == 1)
+        self._rebuild_plots(nx, ny, grid)
         self.progress.setMaximum(grid.total_points())
         self.progress.setValue(0)
 
@@ -359,6 +382,68 @@ class ScanPanel(QWidget):
             self.worker.stop()
 
     # ------------------------------------------------------------------
+    # Plot mode switching (image vs line)
+    # ------------------------------------------------------------------
+
+    def _rebuild_plots(self, nx: int, ny: int, grid: ScanGrid) -> None:
+        """Switch each subplot between ImageItem (2D) and PlotDataItem (1D line)."""
+        specs = [
+            ("_map_plot_1w",  "_map_image_1w",  "_map_cb_1w",
+             "_line_1w",  "Demod amp @ 1ω", "viridis",  "Peak amplitude"),
+            ("_map_plot_2w",  "_map_image_2w",  "_map_cb_2w",
+             "_line_2w",  "Demod amp @ 2ω", "viridis",  "Peak amplitude"),
+            ("_map_plot_m1a", "_map_image_m1a", "_map_cb_m1a",
+             "_line_m1a", "SNOM M1A",        "viridis",  "Amplitude"),
+            ("_map_plot_m1p", "_map_image_m1p", "_map_cb_m1p",
+             "_line_m1p", "SNOM M1P",        "twilight", "Phase (rad)"),
+        ]
+
+        if self._scan_is_line:
+            # Build position axis along the varying dimension (nm)
+            if ny > 1:
+                step = grid.y_step_nm
+                n = ny
+                x_label = "Y position (nm)"
+            else:
+                step = grid.x_step_nm
+                n = nx
+                x_label = "X position (nm)"
+            self._scan_line_coords = np.arange(n) * step
+
+            for attr_plot, _attr_img, attr_cb, attr_line, title, _, y_label in specs:
+                plot: pg.PlotItem = getattr(self, attr_plot)
+                plot.clear()
+                plot.setAspectLocked(False)
+                plot.setTitle(title)
+                plot.setLabel("bottom", x_label)
+                plot.setLabel("left", y_label)
+                line = plot.plot(
+                    self._scan_line_coords,
+                    np.full(n, np.nan),
+                    pen=pg.mkPen(color="#4fc3f7", width=2),
+                    symbol="o",
+                    symbolSize=4,
+                    symbolBrush="#4fc3f7",
+                )
+                setattr(self, attr_line, line)
+                # Hide colorbar — not applicable in line mode
+                cb = getattr(self, attr_cb)
+                cb.hide()
+        else:
+            for attr_plot, attr_img, attr_cb, _attr_line, title, _cmap, _y_label in specs:
+                plot = getattr(self, attr_plot)
+                plot.clear()
+                plot.setAspectLocked(True)
+                plot.setTitle(title)
+                img = pg.ImageItem()
+                plot.addItem(img)
+                cb = getattr(self, attr_cb)
+                cb.setImageItem(img, insert_in=plot)
+                cb.show()
+                setattr(self, attr_img, img)
+                img.setImage(np.zeros((ny, nx)).T)
+
+    # ------------------------------------------------------------------
     # Worker callbacks
     # ------------------------------------------------------------------
 
@@ -373,15 +458,46 @@ class ScanPanel(QWidget):
         self.status_label.setText(f"Completed {current} / {total} points")
 
     def _on_point_data(self, point_index: int, result: PointResult) -> None:
-        if self._scan_map_data is None:
+        if self._map_demod_1w is None:
             return
         iy, ix = result.point.iy, result.point.ix
-        if result.demod_results:
-            amp = result.demod_results[-1].peak_amplitude
+        dr = result.demod_results
+        self._map_demod_1w[iy, ix] = (
+            dr[0].peak_amplitude if len(dr) >= 1 and dr[0] is not None else np.nan
+        )
+        self._map_demod_2w[iy, ix] = (
+            dr[1].peak_amplitude if len(dr) >= 2 and dr[1] is not None else np.nan
+        )
+        if result.snom_samples:
+            self._map_m1a[iy, ix] = float(
+                np.nanmean([s.m_amp[1] for s in result.snom_samples])
+            )
+            self._map_m1p[iy, ix] = float(
+                np.nanmean([s.m_phase[1] for s in result.snom_samples])
+            )
+
+        if self._scan_is_line:
+            # Squeeze the singleton dimension to get a 1-D array
+            if self._map_demod_1w.shape[1] == 1:   # nx == 1, vary over Y
+                d1w = self._map_demod_1w[:, 0]
+                d2w = self._map_demod_2w[:, 0]
+                m1a = self._map_m1a[:, 0]
+                m1p = self._map_m1p[:, 0]
+            else:                                    # ny == 1, vary over X
+                d1w = self._map_demod_1w[0, :]
+                d2w = self._map_demod_2w[0, :]
+                m1a = self._map_m1a[0, :]
+                m1p = self._map_m1p[0, :]
+            coords = self._scan_line_coords
+            self._line_1w.setData(coords, d1w)
+            self._line_2w.setData(coords, d2w)
+            self._line_m1a.setData(coords, m1a)
+            self._line_m1p.setData(coords, m1p)
         else:
-            amp = float(np.mean(result.roi_timeseries)) if len(result.roi_timeseries) else 0.0
-        self._scan_map_data[iy, ix] = amp
-        self.map_image.setImage(self._scan_map_data.T)
+            self._map_image_1w.setImage(self._map_demod_1w.T)
+            self._map_image_2w.setImage(self._map_demod_2w.T)
+            self._map_image_m1a.setImage(self._map_m1a.T)
+            self._map_image_m1p.setImage(self._map_m1p.T)
 
     def _on_scan_finished(self, result: ScanResult) -> None:
         if not result.point_results:
