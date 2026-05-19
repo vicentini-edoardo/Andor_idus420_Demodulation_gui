@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import queue
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -92,18 +94,31 @@ class ScanWorker(QThread):
 
                 n_frames = int(self.settings.n_block)
                 timeout_ms = self.settings.frame_timeout_ms()
+
+                frames: list[np.ndarray] = []
+                snom_samples: list[SnomSample] = []
+                roi_buffer: list[float] = []
+                demod_results: list[DemodResult] = []
+
+                # Start concurrent SNOM streaming if supported
+                snom_stop = threading.Event()
+                snom_frame = threading.Event()
+                snom_queue: queue.Queue[SnomSample] = queue.Queue()
+                use_stream = hasattr(self.stage, "stream_continuous")
+                if use_stream:
+                    snom_thread = threading.Thread(
+                        target=self.stage.stream_continuous,  # type: ignore[attr-defined]
+                        args=(snom_stop, snom_frame, snom_queue, t0_scan),
+                        daemon=True,
+                    )
+                    snom_thread.start()
+
                 self.camera.setup_kinetic(
                     self.settings.exposure_s,
                     n_frames,
                     TriggerMode.EXTERNAL,
                 )
                 self.camera.start()
-
-                frames: list[np.ndarray] = []
-                snom_samples: list[SnomSample] = []
-                roi_buffer: list[float] = []
-                demod_results: list[DemodResult] = []
-                t0_point = time.monotonic()
 
                 while self._running and len(frames) < n_frames:
                     if not self.camera.wait_next_frame(timeout_ms):
@@ -117,10 +132,9 @@ class ScanWorker(QThread):
                     frame = self.camera.get_oldest_frame()
                     frames.append(frame)
 
-                    t_sample = time.monotonic() - t0_scan
-                    sample = self.stage.read_sample(t_sample)
-                    snom_samples.append(sample)
-                    self.snom_sample_ready.emit(sample)
+                    # Signal SNOM thread to flush one sample for this frame
+                    if use_stream:
+                        snom_frame.set()
 
                     roi_val = float(
                         integrate_roi(
@@ -147,6 +161,20 @@ class ScanWorker(QThread):
                                 demod_results.append(dr)
                             except Exception:  # noqa: BLE001
                                 pass
+
+                # Stop SNOM thread and collect samples
+                if use_stream:
+                    snom_stop.set()
+                    snom_thread.join(timeout=2.0)
+                    while not snom_queue.empty():
+                        sample = snom_queue.get_nowait()
+                        snom_samples.append(sample)
+                        self.snom_sample_ready.emit(sample)
+                else:
+                    t_sample = time.monotonic() - t0_scan
+                    sample = self.stage.read_sample(t_sample)
+                    snom_samples.append(sample)
+                    self.snom_sample_ready.emit(sample)
 
                 frames_arr = (
                     np.stack(frames, axis=0)

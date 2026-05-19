@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import queue
+import threading
+
 try:
     import asyncio
     import time
@@ -187,6 +190,69 @@ class NeaSnomBackend(StageBackend):
             m_amp=np.array([_get(f"M{h}A") for h in range(n)]),
             m_phase=np.array([_get(f"M{h}P") for h in range(n)]),
         )
+
+    def stream_continuous(
+        self,
+        stop_event: threading.Event,
+        frame_event: threading.Event,
+        out_queue: queue.Queue,
+        t0_scan: float,
+    ) -> None:
+        """Run in a background thread: one Stream for the whole point acquisition.
+
+        Polls every 20 ms. Each time frame_event is set (one camera frame arrived),
+        flush accumulated SNOM polls into a SnomSample and put it in out_queue.
+        Stops when stop_event is set.
+        """
+
+        keys = (
+            [f"O{h}A" for h in range(_N_HARMONICS)]
+            + [f"O{h}P" for h in range(_N_HARMONICS)]
+            + [f"M{h}A" for h in range(_N_HARMONICS)]
+            + [f"M{h}P" for h in range(_N_HARMONICS)]
+            + ["AveragedX", "AveragedY", "AveragedZ"]
+        )
+
+        def _flush(win_sum: dict, win_cnt: dict, t_s: float) -> SnomSample:
+            def _get(k: str) -> float:
+                return win_sum[k] / win_cnt[k] if win_cnt[k] else float("nan")
+            n = _N_HARMONICS
+            return SnomSample(
+                t_s=t_s,
+                xyz_nm=(
+                    _get("AveragedX") * 1000.0,
+                    _get("AveragedY") * 1000.0,
+                    _get("AveragedZ") * 1000.0,
+                ),
+                o_amp=np.array([_get(f"O{h}A") for h in range(n)]),
+                o_phase=np.array([_get(f"O{h}P") for h in range(n)]),
+                m_amp=np.array([_get(f"M{h}A") for h in range(n)]),
+                m_phase=np.array([_get(f"M{h}P") for h in range(n)]),
+            )
+
+        win_sum: dict[str, float] = {k: 0.0 for k in keys}
+        win_cnt: dict[str, int] = {k: 0 for k in keys}
+
+        with self._stream_module.Stream() as s:
+            while not stop_event.is_set():
+                # Poll one 20 ms tick
+                for k in keys:
+                    try:
+                        temp = float(s.data[k][-1])
+                        if np.abs(temp) > 1e-6:
+                            win_sum[k] += temp
+                            win_cnt[k] += 1
+                    except Exception:  # noqa: BLE001
+                        pass
+                time.sleep(0.02)
+
+                # Frame boundary: flush current window into a SnomSample
+                if frame_event.is_set():
+                    frame_event.clear()
+                    t_s = time.monotonic() - t0_scan
+                    out_queue.put(_flush(win_sum, win_cnt, t_s))
+                    win_sum = {k: 0.0 for k in keys}
+                    win_cnt = {k: 0 for k in keys}
 
     # ------------------------------------------------------------------
 
