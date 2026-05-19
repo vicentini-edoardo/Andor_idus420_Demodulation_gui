@@ -264,7 +264,7 @@ class ScanPanel(QWidget):
              "_map_plot_2w", "_map_image_2w", "_map_cb_2w"),
             (1, 0, "SNOM M1A", "viridis", "Amplitude",
              "_map_plot_m1a", "_map_image_m1a", "_map_cb_m1a"),
-            (1, 1, "SNOM M1P", "twilight", "Phase (rad)",
+            (1, 1, "SNOM M1P", "CET-C1", "Phase (rad)",
              "_map_plot_m1p", "_map_image_m1p", "_map_cb_m1p"),
         ]
         for row, col, title, cmap, label, attr_plot, attr_img, attr_cb in _map_specs:
@@ -273,7 +273,10 @@ class ScanPanel(QWidget):
             plot.setAspectLocked(True)
             img = pg.ImageItem()
             plot.addItem(img)
-            cb = pg.ColorBarItem(colorMap=cmap, label=label)
+            try:
+                cb = pg.ColorBarItem(colorMap=cmap, label=label)
+            except Exception:  # noqa: BLE001
+                cb = pg.ColorBarItem(colorMap="viridis", label=label)
             cb.setImageItem(img, insert_in=plot)
             setattr(self, attr_plot, plot)
             setattr(self, attr_img, img)
@@ -395,7 +398,7 @@ class ScanPanel(QWidget):
             ("_map_plot_m1a", "_map_image_m1a", "_map_cb_m1a",
              "_line_m1a", "SNOM M1A",        "viridis",  "Amplitude"),
             ("_map_plot_m1p", "_map_image_m1p", "_map_cb_m1p",
-             "_line_m1p", "SNOM M1P",        "twilight", "Phase (rad)"),
+             "_line_m1p", "SNOM M1P",        "CET-C1", "Phase (rad)"),
         ]
 
         if self._scan_is_line:

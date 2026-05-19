@@ -73,6 +73,7 @@ class ScanWorker(QThread):
         self.camera.abort()
 
     def run(self) -> None:
+        self.setPriority(self.Priority.HighPriority)
         result = ScanResult(
             grid=self.grid,
             settings=self.settings,
@@ -120,15 +121,20 @@ class ScanWorker(QThread):
                 )
                 self.camera.start()
 
+                consecutive_timeouts = 0
                 while self._running and len(frames) < n_frames:
                     if not self.camera.wait_next_frame(timeout_ms):
-                        self.error.emit(
-                            f"Point ({point.ix},{point.iy}): no triggers after "
-                            f"{timeout_ms / 1000:.1f} s — check external trigger."
-                        )
-                        self._running = False
-                        break
-
+                        consecutive_timeouts += 1
+                        if consecutive_timeouts >= 3:
+                            self.error.emit(
+                                f"Point ({point.ix},{point.iy}): no triggers"
+                                f" after {timeout_ms / 1000:.1f} s (×3) —"
+                                " check external trigger."
+                            )
+                            self._running = False
+                            break
+                        continue
+                    consecutive_timeouts = 0
                     frame = self.camera.get_oldest_frame()
                     frames.append(frame)
 

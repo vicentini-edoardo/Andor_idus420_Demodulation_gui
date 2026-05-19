@@ -30,9 +30,13 @@ class DemodulationSettings:
     window: Literal["hann", "blackman", "none"]
 
     def frame_timeout_ms(self) -> int:
-        """Conservative per-frame timeout: 3× the kinetic cycle time, minimum 2 s."""
+        """Per-frame timeout: 5× the kinetic cycle time, minimum 5 s.
+
+        The generous floor absorbs OS scheduler starvation on a busy host
+        without affecting acquisition speed (triggers still drive the pace).
+        """
         cycle_s = 1.0 / max(self.trigger_frequency_hz, 1e-6)
-        return int(max(2000, cycle_s * 3 * 1000))
+        return int(max(5000, cycle_s * 5 * 1000))
 
 
 class DemodulationWorker(QThread):
@@ -63,6 +67,7 @@ class DemodulationWorker(QThread):
         self.backend.abort()
 
     def run(self) -> None:
+        self.setPriority(self.Priority.HighPriority)
         try:
             frame_width = self.backend.frame_width()
             timeout_ms = self.settings.frame_timeout_ms()
@@ -73,18 +78,25 @@ class DemodulationWorker(QThread):
                     TriggerMode.EXTERNAL,
                 )
                 self.backend.start()
-                frames = np.empty((self.settings.n_block, frame_width), dtype=np.uint16)
+                frames = np.empty(
+                    (self.settings.n_block, frame_width), dtype=np.uint16
+                )
                 acquired = 0
+                consecutive_timeouts = 0
                 for idx in range(self.settings.n_block):
                     if not self._running:
                         break
                     if not self.backend.wait_next_frame(timeout_ms):
-                        self.error.emit(
-                            f"No triggers detected after {timeout_ms / 1000:.1f} s — "
-                            "check external trigger cabling."
-                        )
-                        self._running = False
-                        break
+                        consecutive_timeouts += 1
+                        if consecutive_timeouts >= 3:
+                            self.error.emit(
+                                f"No triggers after {timeout_ms / 1000:.1f} s"
+                                " (×3) — check external trigger cabling."
+                            )
+                            self._running = False
+                            break
+                        continue
+                    consecutive_timeouts = 0
                     frame = self.backend.get_oldest_frame()
                     frames[idx] = frame
                     acquired += 1
@@ -153,6 +165,7 @@ class AcquisitionWorker(QThread):
         self.backend.abort()
 
     def run(self) -> None:
+        self.setPriority(self.Priority.HighPriority)
         all_frames: list[np.ndarray] = []
         demod_results: list[DemodResult] = []
         roi_buffer: list[float] = []   # running ROI accumulator for real-time blocking
@@ -165,13 +178,18 @@ class AcquisitionWorker(QThread):
             )
             self.backend.start()
             start_wall = time.monotonic()
+            consecutive_timeouts = 0
             while self._running and len(all_frames) < self.total_frames:
                 if not self.backend.wait_next_frame(timeout_ms):
-                    self.error.emit(
-                        f"No triggers detected after {timeout_ms / 1000:.1f} s — "
-                        "check external trigger cabling."
-                    )
-                    break
+                    consecutive_timeouts += 1
+                    if consecutive_timeouts >= 3:
+                        self.error.emit(
+                            f"No triggers after {timeout_ms / 1000:.1f} s"
+                            " (×3) — check external trigger cabling."
+                        )
+                        break
+                    continue
+                consecutive_timeouts = 0
                 # Use get_oldest_frame for consistent one-frame-at-a-time retrieval;
                 # this avoids the mixed-semantics bug with get_new_frames_batch.
                 frame = self.backend.get_oldest_frame()
@@ -287,6 +305,7 @@ class LiveSpectrumWorker(QThread):
         ).frame_timeout_ms()
         sample_index = 0
         try:
+            self.setPriority(self.Priority.HighPriority)
             while self._running:
                 self.backend.setup_kinetic(
                     self.exposure_s,
@@ -294,16 +313,21 @@ class LiveSpectrumWorker(QThread):
                     TriggerMode.EXTERNAL,
                 )
                 self.backend.start()
+                consecutive_timeouts = 0
                 for _ in range(self.burst_frames):
                     if not self._running:
                         break
                     if not self.backend.wait_next_frame(timeout_ms):
-                        self.error.emit(
-                            f"No triggers detected after {timeout_ms / 1000:.1f} s — "
-                            "check external trigger cabling."
-                        )
-                        self._running = False
-                        break
+                        consecutive_timeouts += 1
+                        if consecutive_timeouts >= 3:
+                            self.error.emit(
+                                f"No triggers after {timeout_ms / 1000:.1f} s"
+                                " (×3) — check external trigger cabling."
+                            )
+                            self._running = False
+                            break
+                        continue
+                    consecutive_timeouts = 0
                     frame = self.backend.get_oldest_frame().copy()
                     self.frame_acquired.emit(frame)
                     roi_sum = float(
