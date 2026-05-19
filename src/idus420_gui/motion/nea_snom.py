@@ -43,7 +43,13 @@ class NeaSnomBackend(StageBackend):
     # ------------------------------------------------------------------
 
     def connect(self, host: str = "nea-server") -> None:
-        self._loop = asyncio.get_event_loop()
+        try:
+            self._loop = asyncio.get_event_loop()
+            if self._loop.is_closed():
+                raise RuntimeError("closed")
+        except RuntimeError:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
         nest_asyncio.apply(self._loop)
         self._loop.run_until_complete(
             nea_tools.connect(host, fingerprint=None, path_to_dll="")
