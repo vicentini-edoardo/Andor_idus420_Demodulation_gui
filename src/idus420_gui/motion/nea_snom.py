@@ -4,6 +4,7 @@ from __future__ import annotations
 
 try:
     import asyncio
+    import time
     from time import sleep
 
     import nest_asyncio
@@ -127,7 +128,9 @@ class NeaSnomBackend(StageBackend):
         self._require_connected()
         return float(self._context.Microscope.Py.MechanicalAmplitude[harmonic])
 
-    def read_sample(self, t_s: float, t_integ_s: float = 0.05) -> SnomSample:
+    def read_sample(
+        self, t_s: float, t_integ_s: float = 0.05, n_avg: int = 1
+    ) -> SnomSample:
         self._require_connected()
 
         keys = (
@@ -137,33 +140,46 @@ class NeaSnomBackend(StageBackend):
             + [f"M{h}P" for h in range(_N_HARMONICS)]
             + ["AveragedX", "AveragedY", "AveragedZ"]
         )
-        accum: dict[str, list[float]] = {k: [] for k in keys}
+        totals: dict[str, float] = {k: 0.0 for k in keys}
+        counts: dict[str, int] = {k: 0 for k in keys}
 
-        def _cb(data) -> None:  # noqa: ANN001
+        for _ in range(n_avg):
+            win_sum: dict[str, float] = {k: 0.0 for k in keys}
+            win_cnt: dict[str, int] = {k: 0 for k in keys}
+
+            with self._stream_module.Stream() as s:
+                t_end = time.time() + t_integ_s
+                while time.time() < t_end:
+                    for k in keys:
+                        try:
+                            temp = float(s.data[k][-1])
+                            if np.abs(temp) > 1e-6:
+                                win_sum[k] += temp
+                                win_cnt[k] += 1
+                        except Exception:  # noqa: BLE001
+                            pass
+                    time.sleep(0.02)
+
             for k in keys:
-                try:
-                    accum[k].append(float(data[k][-1]))
-                except Exception:  # noqa: BLE001
-                    pass  # missed samples not appended; per-key count stays correct
+                if win_cnt[k]:
+                    totals[k] += win_sum[k] / win_cnt[k]
+                    counts[k] += 1
 
-        with self._stream_module.Stream(callback=_cb):
-            sleep(t_integ_s)
+        def _get(k: str) -> float:
+            return totals[k] / counts[k] if counts[k] else float("nan")
 
-        def _avg(vals: list[float]) -> float:
-            return float(np.nanmean(vals)) if vals else np.nan
-
-        x_nm = _avg(accum["AveragedX"]) * 1000.0
-        y_nm = _avg(accum["AveragedY"]) * 1000.0
-        z_nm = _avg(accum["AveragedZ"]) * 1000.0
+        x_nm = _get("AveragedX") * 1000.0
+        y_nm = _get("AveragedY") * 1000.0
+        z_nm = _get("AveragedZ") * 1000.0
 
         n = _N_HARMONICS
         return SnomSample(
             t_s=t_s,
             xyz_nm=(x_nm, y_nm, z_nm),
-            o_amp=np.array([_avg(accum[f"O{h}A"]) for h in range(n)]),
-            o_phase=np.array([_avg(accum[f"O{h}P"]) for h in range(n)]),
-            m_amp=np.array([_avg(accum[f"M{h}A"]) for h in range(n)]),
-            m_phase=np.array([_avg(accum[f"M{h}P"]) for h in range(n)]),
+            o_amp=np.array([_get(f"O{h}A") for h in range(n)]),
+            o_phase=np.array([_get(f"O{h}P") for h in range(n)]),
+            m_amp=np.array([_get(f"M{h}A") for h in range(n)]),
+            m_phase=np.array([_get(f"M{h}P") for h in range(n)]),
         )
 
     # ------------------------------------------------------------------
