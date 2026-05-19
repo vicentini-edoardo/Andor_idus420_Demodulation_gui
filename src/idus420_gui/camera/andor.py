@@ -205,6 +205,7 @@ class AndorIDusBackend(CameraBackend):
         trigger: TriggerMode,
         n_accumulations: int = 1,
     ) -> AcquisitionTimings:
+        self.abort()  # ensure camera is idle before reconfiguring
         self._n_kinetics = int(n_kinetics)
         self._check(self._sdk.SetAcquisitionMode(3), "SetAcquisitionMode(Kinetic)")
         self._check(self._sdk.SetTriggerMode(self._trigger_code(trigger)), "SetTriggerMode")
