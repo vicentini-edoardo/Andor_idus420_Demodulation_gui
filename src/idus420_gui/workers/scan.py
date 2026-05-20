@@ -26,7 +26,7 @@ class PointResult:
     actual_xyz_nm: tuple[float, float, float]
     frames: np.ndarray                   # (n_frames, frame_width) uint16
     roi_timeseries: np.ndarray           # (n_frames,) float64
-    demod_results: list[DemodResult | None]  # index 0 = 1ω, index 1 = 2ω per n_block chunk
+    demod_results: list[DemodResult | None]  # index 0 = 0ω, 1 = 1ω, 2 = 2ω, 3 = 3ω per n_block chunk
     snom_samples: list[SnomSample]       # one per frame (stream_continuous) or one total
 
 
@@ -156,9 +156,26 @@ class ScanWorker(QThread):
                         chunk = np.asarray(roi_buffer, dtype=np.float64)
                         roi_buffer.clear()
                         if len(chunk) >= 4:
+                            # 0ω: DC mean — synthesise a fake DemodResult
+                            try:
+                                dc = float(np.mean(chunk))
+                                f_axis = np.fft.rfftfreq(chunk.size, d=1.0 / self.settings.trigger_frequency_hz)
+                                demod_results.append(
+                                    DemodResult(
+                                        peak_frequency=0.0,
+                                        peak_amplitude=dc,
+                                        f_axis=f_axis,
+                                        spectrum=np.zeros_like(f_axis),
+                                        snr=float("nan"),
+                                    )
+                                )
+                            except Exception:  # noqa: BLE001
+                                demod_results.append(None)
+                            # 1ω, 2ω, 3ω
                             for f_target in (
                                 self.settings.f_expected,
                                 2.0 * self.settings.f_expected,
+                                3.0 * self.settings.f_expected,
                             ):
                                 try:
                                     dr = demodulate(

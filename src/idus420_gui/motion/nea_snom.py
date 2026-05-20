@@ -46,13 +46,16 @@ class NeaSnomBackend(StageBackend):
     # ------------------------------------------------------------------
 
     def connect(self, host: str = "nea-server") -> None:
+        # Always create a fresh event loop to avoid reusing a closed or
+        # dirty loop from a previous scan session.
         try:
-            self._loop = asyncio.get_event_loop()
-            if self._loop.is_closed():
-                raise RuntimeError("closed")
-        except RuntimeError:
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
+            old_loop = asyncio.get_event_loop()
+            if not old_loop.is_closed():
+                old_loop.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
         nest_asyncio.apply(self._loop)
         self._loop.run_until_complete(
             nea_tools.connect(host, fingerprint=None, path_to_dll="")

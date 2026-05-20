@@ -54,8 +54,10 @@ class ScanPanel(QWidget):
         self.demod_source = demod_source
         self.worker: ScanWorker | None = None
 
+        self._map_demod_0w: np.ndarray | None = None
         self._map_demod_1w: np.ndarray | None = None
         self._map_demod_2w: np.ndarray | None = None
+        self._map_demod_3w: np.ndarray | None = None
         self._map_m1a: np.ndarray | None = None
         self._map_m1p: np.ndarray | None = None
         self._scan_is_line: bool = False
@@ -258,13 +260,17 @@ class ScanPanel(QWidget):
         self.map_widget.setBackground(theme.BG)
 
         _map_specs = [
-            (0, 0, "Demod amp @ 1ω", "viridis", "Peak amplitude",
+            (0, 0, "Demod amp @ 0ω (DC)", "viridis", "Mean intensity",
+             "_map_plot_0w", "_map_image_0w", "_map_cb_0w"),
+            (0, 1, "Demod amp @ 1ω", "viridis", "Peak amplitude",
              "_map_plot_1w", "_map_image_1w", "_map_cb_1w"),
-            (0, 1, "Demod amp @ 2ω", "viridis", "Peak amplitude",
+            (1, 0, "Demod amp @ 2ω", "viridis", "Peak amplitude",
              "_map_plot_2w", "_map_image_2w", "_map_cb_2w"),
-            (1, 0, "SNOM M1A", "viridis", "Amplitude",
+            (1, 1, "Demod amp @ 3ω", "viridis", "Peak amplitude",
+             "_map_plot_3w", "_map_image_3w", "_map_cb_3w"),
+            (2, 0, "SNOM M1A", "viridis", "Amplitude",
              "_map_plot_m1a", "_map_image_m1a", "_map_cb_m1a"),
-            (1, 1, "SNOM M1P", "CET-C1", "Phase (rad)",
+            (2, 1, "SNOM M1P", "CET-C1", "Phase (rad)",
              "_map_plot_m1p", "_map_image_m1p", "_map_cb_m1p"),
         ]
         for row, col, title, cmap, label, attr_plot, attr_img, attr_cb in _map_specs:
@@ -359,8 +365,10 @@ class ScanPanel(QWidget):
         stage = NeaSnomBackend()
 
         nan = np.full((ny, nx), np.nan, dtype=np.float64)
+        self._map_demod_0w = nan.copy()
         self._map_demod_1w = nan.copy()
         self._map_demod_2w = nan.copy()
+        self._map_demod_3w = nan.copy()
         self._map_m1a = nan.copy()
         self._map_m1p = nan.copy()
 
@@ -391,10 +399,14 @@ class ScanPanel(QWidget):
     def _rebuild_plots(self, nx: int, ny: int, grid: ScanGrid) -> None:
         """Switch each subplot between ImageItem (2D) and PlotDataItem (1D line)."""
         specs = [
+            ("_map_plot_0w",  "_map_image_0w",  "_map_cb_0w",
+             "_line_0w",  "Demod amp @ 0ω (DC)", "viridis",  "Mean intensity"),
             ("_map_plot_1w",  "_map_image_1w",  "_map_cb_1w",
              "_line_1w",  "Demod amp @ 1ω", "viridis",  "Peak amplitude"),
             ("_map_plot_2w",  "_map_image_2w",  "_map_cb_2w",
              "_line_2w",  "Demod amp @ 2ω", "viridis",  "Peak amplitude"),
+            ("_map_plot_3w",  "_map_image_3w",  "_map_cb_3w",
+             "_line_3w",  "Demod amp @ 3ω", "viridis",  "Peak amplitude"),
             ("_map_plot_m1a", "_map_image_m1a", "_map_cb_m1a",
              "_line_m1a", "SNOM M1A",        "viridis",  "Amplitude"),
             ("_map_plot_m1p", "_map_image_m1p", "_map_cb_m1p",
@@ -461,15 +473,22 @@ class ScanPanel(QWidget):
         self.status_label.setText(f"Completed {current} / {total} points")
 
     def _on_point_data(self, point_index: int, result: PointResult) -> None:
-        if self._map_demod_1w is None:
+        if self._map_demod_0w is None:
             return
         iy, ix = result.point.iy, result.point.ix
         dr = result.demod_results
-        self._map_demod_1w[iy, ix] = (
+        # dr indices: 0 = 0ω, 1 = 1ω, 2 = 2ω, 3 = 3ω  (4 entries per n_block chunk)
+        self._map_demod_0w[iy, ix] = (
             dr[0].peak_amplitude if len(dr) >= 1 and dr[0] is not None else np.nan
         )
-        self._map_demod_2w[iy, ix] = (
+        self._map_demod_1w[iy, ix] = (
             dr[1].peak_amplitude if len(dr) >= 2 and dr[1] is not None else np.nan
+        )
+        self._map_demod_2w[iy, ix] = (
+            dr[2].peak_amplitude if len(dr) >= 3 and dr[2] is not None else np.nan
+        )
+        self._map_demod_3w[iy, ix] = (
+            dr[3].peak_amplitude if len(dr) >= 4 and dr[3] is not None else np.nan
         )
         if result.snom_samples:
             self._map_m1a[iy, ix] = float(
@@ -480,25 +499,32 @@ class ScanPanel(QWidget):
             )
 
         if self._scan_is_line:
-            # Squeeze the singleton dimension to get a 1-D array
-            if self._map_demod_1w.shape[1] == 1:   # nx == 1, vary over Y
+            if self._map_demod_0w.shape[1] == 1:   # nx == 1, vary over Y
+                d0w = self._map_demod_0w[:, 0]
                 d1w = self._map_demod_1w[:, 0]
                 d2w = self._map_demod_2w[:, 0]
+                d3w = self._map_demod_3w[:, 0]
                 m1a = self._map_m1a[:, 0]
                 m1p = self._map_m1p[:, 0]
             else:                                    # ny == 1, vary over X
+                d0w = self._map_demod_0w[0, :]
                 d1w = self._map_demod_1w[0, :]
                 d2w = self._map_demod_2w[0, :]
+                d3w = self._map_demod_3w[0, :]
                 m1a = self._map_m1a[0, :]
                 m1p = self._map_m1p[0, :]
             coords = self._scan_line_coords
+            self._line_0w.setData(coords, d0w)
             self._line_1w.setData(coords, d1w)
             self._line_2w.setData(coords, d2w)
+            self._line_3w.setData(coords, d3w)
             self._line_m1a.setData(coords, m1a)
             self._line_m1p.setData(coords, m1p)
         else:
+            self._map_image_0w.setImage(self._map_demod_0w.T)
             self._map_image_1w.setImage(self._map_demod_1w.T)
             self._map_image_2w.setImage(self._map_demod_2w.T)
+            self._map_image_3w.setImage(self._map_demod_3w.T)
             self._map_image_m1a.setImage(self._map_m1a.T)
             self._map_image_m1p.setImage(self._map_m1p.T)
 
