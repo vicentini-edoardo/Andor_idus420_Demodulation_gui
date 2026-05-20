@@ -53,6 +53,7 @@ class ScanPanel(QWidget):
         self.backend: CameraBackend | None = None
         self.demod_source = demod_source
         self.worker: ScanWorker | None = None
+        self._stage: object | None = None  # NeaSnomBackend kept alive across scans
 
         self._map_demod_0w: np.ndarray | None = None
         self._map_demod_1w: np.ndarray | None = None
@@ -362,7 +363,11 @@ class ScanPanel(QWidget):
         }
         metadata["snom_host"] = self.snom_host.text()
 
-        stage = NeaSnomBackend()
+        # Reuse the stage backend across scans — disconnect/reconnect between
+        # scans corrupts the neaspec session state.
+        if self._stage is None:
+            self._stage = NeaSnomBackend()
+        stage = self._stage
 
         nan = np.full((ny, nx), np.nan, dtype=np.float64)
         self._map_demod_0w = nan.copy()
@@ -391,6 +396,15 @@ class ScanPanel(QWidget):
     def stop(self) -> None:
         if self.worker:
             self.worker.stop()
+
+    def closeEvent(self, event: object) -> None:
+        if self._stage is not None:
+            try:
+                self._stage.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            self._stage = None
+        super().closeEvent(event)  # type: ignore[misc]
 
     # ------------------------------------------------------------------
     # Plot mode switching (image vs line)

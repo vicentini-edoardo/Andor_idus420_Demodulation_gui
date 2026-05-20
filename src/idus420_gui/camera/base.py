@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
+import time
 
 import numpy as np
 
@@ -174,6 +175,21 @@ class CameraBackend(ABC):
 
     @abstractmethod
     def status(self) -> AcquisitionStatus: ...
+
+    def wait_until_idle(self, timeout_s: float = 2.0, poll_s: float = 0.01) -> bool:
+        """Poll the backend until it reports idle.
+
+        Andor SDK calls are sensitive to reconfiguration while an abort is still
+        settling. Backends can override this, but the generic status poll keeps
+        worker code from immediately preparing a half-aborted camera.
+        """
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        while True:
+            if self.status() is AcquisitionStatus.IDLE:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(max(0.001, float(poll_s)))
 
     @abstractmethod
     def wait_next_frame(self, timeout_ms: int) -> bool: ...

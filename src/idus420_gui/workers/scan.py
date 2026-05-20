@@ -15,7 +15,11 @@ from idus420_gui.camera.base import CameraBackend, TriggerMode
 from idus420_gui.motion.base import ScanGrid, SnomSample, StageBackend, StagePoint
 from idus420_gui.processing.demodulation import DemodResult, demodulate
 from idus420_gui.processing.roi import integrate_roi
-from idus420_gui.workers.acquisition import DemodulationSettings
+from idus420_gui.workers.acquisition import (
+    DemodulationSettings,
+    _read_ready_frames,
+    _timeout_error,
+)
 
 
 @dataclass
@@ -38,6 +42,17 @@ class ScanResult:
     settings: DemodulationSettings
     point_results: list[PointResult] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def _empty_demod_result(f_target: float, trigger_frequency_hz: float, n_samples: int) -> DemodResult:
+    f_axis = np.fft.rfftfreq(max(1, int(n_samples)), d=1.0 / trigger_frequency_hz)
+    return DemodResult(
+        peak_frequency=float(f_target),
+        peak_amplitude=float("nan"),
+        f_axis=f_axis,
+        spectrum=np.full_like(f_axis, np.nan, dtype=np.float64),
+        snr=float("nan"),
+    )
 
 
 class ScanWorker(QThread):
@@ -80,7 +95,8 @@ class ScanWorker(QThread):
             metadata=dict(self.metadata),
         )
         try:
-            self.stage.connect(self.metadata.get("snom_host", "nea-server"))
+            if not self.stage.is_connected():
+                self.stage.connect(self.metadata.get("snom_host", "nea-server"))
             t0_scan = time.monotonic()
             total = self.grid.total_points()
             point_index = 0
@@ -98,7 +114,6 @@ class ScanWorker(QThread):
 
                 frames: list[np.ndarray] = []
                 snom_samples: list[SnomSample] = []
-                roi_buffer: list[float] = []
                 demod_results: list[DemodResult] = []
 
                 # Start concurrent SNOM streaming if supported
@@ -127,67 +142,20 @@ class ScanWorker(QThread):
                         consecutive_timeouts += 1
                         if consecutive_timeouts >= 3:
                             self.error.emit(
-                                f"Point ({point.ix},{point.iy}): no triggers"
-                                f" after {timeout_ms / 1000:.1f} s (×3) —"
-                                " check external trigger."
+                                f"Point ({point.ix},{point.iy}): "
+                                f"{_timeout_error(timeout_ms)}"
                             )
                             self._running = False
                             break
                         continue
                     consecutive_timeouts = 0
-                    frame = self.camera.get_oldest_frame()
-                    frames.append(frame)
+                    ready = _read_ready_frames(self.camera, n_frames - len(frames))
+                    for frame in ready:
+                        frames.append(frame.copy())
 
-                    # Signal SNOM thread to flush one sample for this frame
-                    if use_stream:
-                        snom_frame.set()
-
-                    roi_val = float(
-                        integrate_roi(
-                            frame.reshape(1, -1),
-                            self.settings.pixel_start,
-                            self.settings.pixel_end,
-                            self.settings.roi_method,
-                        )[0]
-                    )
-                    roi_buffer.append(roi_val)
-
-                    if len(roi_buffer) == self.settings.n_block:
-                        chunk = np.asarray(roi_buffer, dtype=np.float64)
-                        roi_buffer.clear()
-                        if len(chunk) >= 4:
-                            # 0ω: DC mean — synthesise a fake DemodResult
-                            try:
-                                dc = float(np.mean(chunk))
-                                f_axis = np.fft.rfftfreq(chunk.size, d=1.0 / self.settings.trigger_frequency_hz)
-                                demod_results.append(
-                                    DemodResult(
-                                        peak_frequency=0.0,
-                                        peak_amplitude=dc,
-                                        f_axis=f_axis,
-                                        spectrum=np.zeros_like(f_axis),
-                                        snr=float("nan"),
-                                    )
-                                )
-                            except Exception:  # noqa: BLE001
-                                demod_results.append(None)
-                            # 1ω, 2ω, 3ω
-                            for f_target in (
-                                self.settings.f_expected,
-                                2.0 * self.settings.f_expected,
-                                3.0 * self.settings.f_expected,
-                            ):
-                                try:
-                                    dr = demodulate(
-                                        chunk,
-                                        self.settings.trigger_frequency_hz,
-                                        f_target,
-                                        self.settings.f_search_halfwidth,
-                                        self.settings.window,
-                                    )
-                                    demod_results.append(dr)
-                                except Exception:  # noqa: BLE001
-                                    demod_results.append(None)
+                        # Signal SNOM thread to flush one sample for this frame.
+                        if use_stream:
+                            snom_frame.set()
 
                 # Stop SNOM thread and collect samples
                 if use_stream:
@@ -198,10 +166,11 @@ class ScanWorker(QThread):
                         snom_samples.append(sample)
                         self.snom_sample_ready.emit(sample)
                 else:
-                    t_sample = time.monotonic() - t0_scan
-                    sample = self.stage.read_sample(t_sample)
-                    snom_samples.append(sample)
-                    self.snom_sample_ready.emit(sample)
+                    for _ in frames:
+                        t_sample = time.monotonic() - t0_scan
+                        sample = self.stage.read_sample(t_sample)
+                        snom_samples.append(sample)
+                        self.snom_sample_ready.emit(sample)
 
                 frames_arr = (
                     np.stack(frames, axis=0)
@@ -223,6 +192,56 @@ class ScanWorker(QThread):
                     dtype=np.float64,
                 ) if frames else np.empty(0, dtype=np.float64)
 
+                if roi_arr.size >= 4:
+                    chunk = roi_arr[: self.settings.n_block]
+                    # 0ω: DC mean — synthesise a fake DemodResult.
+                    try:
+                        dc = float(np.mean(chunk))
+                        f_axis = np.fft.rfftfreq(
+                            chunk.size,
+                            d=1.0 / self.settings.trigger_frequency_hz,
+                        )
+                        demod_results.append(
+                            DemodResult(
+                                peak_frequency=0.0,
+                                peak_amplitude=dc,
+                                f_axis=f_axis,
+                                spectrum=np.zeros_like(f_axis),
+                                snr=float("nan"),
+                            )
+                        )
+                    except Exception:  # noqa: BLE001
+                        demod_results.append(
+                            _empty_demod_result(
+                                0.0,
+                                self.settings.trigger_frequency_hz,
+                                chunk.size,
+                            )
+                        )
+                    # 1ω, 2ω, 3ω
+                    for f_target in (
+                        self.settings.f_expected,
+                        2.0 * self.settings.f_expected,
+                        3.0 * self.settings.f_expected,
+                    ):
+                        try:
+                            dr = demodulate(
+                                chunk,
+                                self.settings.trigger_frequency_hz,
+                                f_target,
+                                self.settings.f_search_halfwidth,
+                                self.settings.window,
+                            )
+                            demod_results.append(dr)
+                        except Exception:  # noqa: BLE001
+                            demod_results.append(
+                                _empty_demod_result(
+                                    f_target,
+                                    self.settings.trigger_frequency_hz,
+                                    chunk.size,
+                                )
+                            )
+
                 pt_result = PointResult(
                     point=point,
                     actual_xyz_nm=actual_xyz,
@@ -240,9 +259,5 @@ class ScanWorker(QThread):
             self.error.emit(str(exc))
         finally:
             self.camera.abort()
-            try:
-                self.stage.disconnect()
-            except Exception:  # noqa: BLE001
-                pass
             self.scan_finished.emit(result)
             self.worker_finished.emit()

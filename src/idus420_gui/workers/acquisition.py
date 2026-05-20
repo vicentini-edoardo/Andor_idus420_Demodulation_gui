@@ -15,6 +15,42 @@ from idus420_gui.processing.demodulation import DemodResult, demodulate
 from idus420_gui.processing.roi import integrate_roi
 
 
+_LIVE_ACQUISITION_FRAMES = 4_096
+_GUI_UPDATE_INTERVAL_S = 0.05
+
+
+def _read_ready_frames(backend: CameraBackend, max_frames: int | None = None) -> np.ndarray:
+    """Return all SDK-reported ready frames, falling back to one-frame reads.
+
+    The workers call this only after wait_next_frame() reports a completed frame,
+    so an empty batch means the wrapper cannot expose batch reads reliably.
+    """
+    frame_width = backend.frame_width()
+    try:
+        batch = backend.get_new_frames_batch()
+    except (AttributeError, NotImplementedError, TypeError):
+        batch = None
+    if batch is None:
+        frame = backend.get_oldest_frame()
+        return frame.reshape(1, frame_width).copy()
+
+    frames = np.asarray(batch, dtype=np.uint16)
+    if frames.size == 0:
+        frame = backend.get_oldest_frame()
+        return frame.reshape(1, frame_width).copy()
+    frames = frames.reshape(-1, frame_width)
+    if max_frames is not None:
+        frames = frames[:max(0, int(max_frames))]
+    return frames.copy()
+
+
+def _timeout_error(timeout_ms: int) -> str:
+    return (
+        f"No completed camera frames after {timeout_ms / 1000:.1f} s"
+        " (×3). Trigger may be present; camera/SDK did not deliver frames."
+    )
+
+
 @dataclass(frozen=True)
 class DemodulationSettings:
     """Runtime settings for a demodulation block."""
@@ -69,57 +105,64 @@ class DemodulationWorker(QThread):
     def run(self) -> None:
         self.setPriority(self.Priority.HighPriority)
         try:
-            frame_width = self.backend.frame_width()
             timeout_ms = self.settings.frame_timeout_ms()
+            acquisition_frames = (
+                self.settings.n_block
+                if not self.continuous
+                else max(self.settings.n_block * 64, _LIVE_ACQUISITION_FRAMES)
+            )
+            block_frames: list[np.ndarray] = []
+            last_preview_s = 0.0
             while self._running:
                 self.backend.setup_kinetic(
                     self.settings.exposure_s,
-                    self.settings.n_block,
+                    acquisition_frames,
                     TriggerMode.EXTERNAL,
                 )
                 self.backend.start()
-                frames = np.empty(
-                    (self.settings.n_block, frame_width), dtype=np.uint16
-                )
                 acquired = 0
                 consecutive_timeouts = 0
-                for idx in range(self.settings.n_block):
+                while self._running and acquired < acquisition_frames:
                     if not self._running:
                         break
                     if not self.backend.wait_next_frame(timeout_ms):
                         consecutive_timeouts += 1
                         if consecutive_timeouts >= 3:
-                            self.error.emit(
-                                f"No triggers after {timeout_ms / 1000:.1f} s"
-                                " (×3) — check external trigger cabling."
-                            )
+                            self.error.emit(_timeout_error(timeout_ms))
                             self._running = False
                             break
                         continue
                     consecutive_timeouts = 0
-                    frame = self.backend.get_oldest_frame()
-                    frames[idx] = frame
-                    acquired += 1
-                    if idx == 0 or idx == self.settings.n_block - 1:
-                        self.frame_acquired.emit(frame.copy())
-                if acquired:
-                    block = frames[:acquired]
-                    roi_ts = integrate_roi(
-                        block,
-                        self.settings.pixel_start,
-                        self.settings.pixel_end,
-                        self.settings.roi_method,
+                    ready = _read_ready_frames(
+                        self.backend,
+                        acquisition_frames - acquired,
                     )
-                    self.block_complete.emit(roi_ts.copy())
-                    if acquired >= 4:
-                        result = demodulate(
-                            roi_ts,
-                            self.settings.trigger_frequency_hz,
-                            self.settings.f_expected,
-                            self.settings.f_search_halfwidth,
-                            self.settings.window,
-                        )
-                        self.demod_result.emit(result)
+                    now = time.monotonic()
+                    for frame in ready:
+                        block_frames.append(frame.copy())
+                        acquired += 1
+                        if now - last_preview_s >= _GUI_UPDATE_INTERVAL_S:
+                            self.frame_acquired.emit(frame.copy())
+                            last_preview_s = now
+                        if len(block_frames) == self.settings.n_block:
+                            block = np.stack(block_frames, axis=0)
+                            block_frames.clear()
+                            roi_ts = integrate_roi(
+                                block,
+                                self.settings.pixel_start,
+                                self.settings.pixel_end,
+                                self.settings.roi_method,
+                            )
+                            self.block_complete.emit(roi_ts.copy())
+                            if roi_ts.size >= 4:
+                                result = demodulate(
+                                    roi_ts,
+                                    self.settings.trigger_frequency_hz,
+                                    self.settings.f_expected,
+                                    self.settings.f_search_halfwidth,
+                                    self.settings.window,
+                                )
+                                self.demod_result.emit(result)
                 if not self.continuous:
                     break
         except Exception as exc:  # noqa: BLE001 - worker must report and exit cleanly.
@@ -183,46 +226,45 @@ class AcquisitionWorker(QThread):
                 if not self.backend.wait_next_frame(timeout_ms):
                     consecutive_timeouts += 1
                     if consecutive_timeouts >= 3:
-                        self.error.emit(
-                            f"No triggers after {timeout_ms / 1000:.1f} s"
-                            " (×3) — check external trigger cabling."
-                        )
+                        self.error.emit(_timeout_error(timeout_ms))
                         break
                     continue
                 consecutive_timeouts = 0
-                # Use get_oldest_frame for consistent one-frame-at-a-time retrieval;
-                # this avoids the mixed-semantics bug with get_new_frames_batch.
-                frame = self.backend.get_oldest_frame()
-                all_frames.append(frame)
-                self.frame_acquired.emit(frame.copy())
-
-                # Real-time ROI integration and per-block demodulation.
-                roi_val = float(
-                    integrate_roi(
-                        frame.reshape(1, -1),
-                        self.settings.pixel_start,
-                        self.settings.pixel_end,
-                        self.settings.roi_method,
-                    )[0]
+                ready = _read_ready_frames(
+                    self.backend,
+                    self.total_frames - len(all_frames),
                 )
-                roi_buffer.append(roi_val)
+                for frame in ready:
+                    all_frames.append(frame.copy())
+                    self.frame_acquired.emit(frame.copy())
 
-                if len(roi_buffer) == self.settings.n_block:
-                    chunk = np.asarray(roi_buffer, dtype=np.float64)
-                    roi_buffer.clear()
-                    if len(chunk) >= 4:
-                        result = demodulate(
-                            chunk,
-                            self.settings.trigger_frequency_hz,
-                            self.settings.f_expected,
-                            self.settings.f_search_halfwidth,
-                            self.settings.window,
-                        )
-                        demod_results.append(result)
-                        self.demod_result.emit(result)
+                    # Real-time ROI integration and per-block demodulation.
+                    roi_val = float(
+                        integrate_roi(
+                            frame.reshape(1, -1),
+                            self.settings.pixel_start,
+                            self.settings.pixel_end,
+                            self.settings.roi_method,
+                        )[0]
+                    )
+                    roi_buffer.append(roi_val)
 
-                elapsed = time.monotonic() - start_wall
-                self.progress.emit(len(all_frames), self.total_frames, elapsed)
+                    if len(roi_buffer) == self.settings.n_block:
+                        chunk = np.asarray(roi_buffer, dtype=np.float64)
+                        roi_buffer.clear()
+                        if len(chunk) >= 4:
+                            result = demodulate(
+                                chunk,
+                                self.settings.trigger_frequency_hz,
+                                self.settings.f_expected,
+                                self.settings.f_search_halfwidth,
+                                self.settings.window,
+                            )
+                            demod_results.append(result)
+                            self.demod_result.emit(result)
+
+                    elapsed = time.monotonic() - start_wall
+                    self.progress.emit(len(all_frames), self.total_frames, elapsed)
 
             frames = (
                 np.stack(all_frames, axis=0)
@@ -309,38 +351,42 @@ class LiveSpectrumWorker(QThread):
             while self._running:
                 self.backend.setup_kinetic(
                     self.exposure_s,
-                    self.burst_frames,
+                    max(self.burst_frames, _LIVE_ACQUISITION_FRAMES),
                     TriggerMode.EXTERNAL,
                 )
                 self.backend.start()
                 consecutive_timeouts = 0
-                for _ in range(self.burst_frames):
+                acquired = 0
+                acquisition_frames = max(self.burst_frames, _LIVE_ACQUISITION_FRAMES)
+                while self._running and acquired < acquisition_frames:
                     if not self._running:
                         break
                     if not self.backend.wait_next_frame(timeout_ms):
                         consecutive_timeouts += 1
                         if consecutive_timeouts >= 3:
-                            self.error.emit(
-                                f"No triggers after {timeout_ms / 1000:.1f} s"
-                                " (×3) — check external trigger cabling."
-                            )
+                            self.error.emit(_timeout_error(timeout_ms))
                             self._running = False
                             break
                         continue
                     consecutive_timeouts = 0
-                    frame = self.backend.get_oldest_frame().copy()
-                    self.frame_acquired.emit(frame)
-                    roi_sum = float(
-                        integrate_roi(
-                            frame.reshape(1, -1),
-                            self.pixel_start,
-                            self.pixel_end,
-                            "sum",
-                        )[0]
+                    ready = _read_ready_frames(
+                        self.backend,
+                        acquisition_frames - acquired,
                     )
-                    elapsed_s = sample_index / max(self.trigger_frequency_hz, 1e-6)
-                    self.roi_sample.emit(elapsed_s, roi_sum)
-                    sample_index += 1
+                    for frame in ready:
+                        acquired += 1
+                        self.frame_acquired.emit(frame.copy())
+                        roi_sum = float(
+                            integrate_roi(
+                                frame.reshape(1, -1),
+                                self.pixel_start,
+                                self.pixel_end,
+                                "sum",
+                            )[0]
+                        )
+                        elapsed_s = sample_index / max(self.trigger_frequency_hz, 1e-6)
+                        self.roi_sample.emit(elapsed_s, roi_sum)
+                        sample_index += 1
         except Exception as exc:  # noqa: BLE001 - worker must report and exit cleanly.
             self.error.emit(str(exc))
         finally:

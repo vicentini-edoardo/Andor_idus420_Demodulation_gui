@@ -7,6 +7,7 @@ testable with the mock backend.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import numpy as np
@@ -87,7 +88,7 @@ class AndorIDusBackend(CameraBackend):
         return self._xpix, self._ypix
 
     def frame_width(self) -> int:
-        if self._frame_width > 0:
+        if getattr(self, "_frame_width", 0) > 0:
             return self._frame_width
         xpix, _ = self.detector_size()
         return xpix
@@ -206,6 +207,8 @@ class AndorIDusBackend(CameraBackend):
         n_accumulations: int = 1,
     ) -> AcquisitionTimings:
         self.abort()  # ensure camera is idle before reconfiguring
+        if not self.wait_until_idle(timeout_s=2.0):
+            raise CameraError("Camera did not become idle before kinetic setup.")
         self._n_kinetics = int(n_kinetics)
         self._check(self._sdk.SetAcquisitionMode(3), "SetAcquisitionMode(Kinetic)")
         self._check(self._sdk.SetTriggerMode(self._trigger_code(trigger)), "SetTriggerMode")
@@ -263,7 +266,11 @@ class AndorIDusBackend(CameraBackend):
     def abort(self) -> None:
         if hasattr(self._sdk, "CancelWait"):
             self._sdk.CancelWait()
-        self._sdk.AbortAcquisition()
+        ret = self._sdk.AbortAcquisition()
+        name = self._error_name(ret)
+        if ret != self._success_code and name not in {"DRV_IDLE", "DRV_NOT_INITIALIZED"}:
+            self._check(ret, "AbortAcquisition")
+        self.wait_until_idle(timeout_s=2.0)
 
     def status(self) -> AcquisitionStatus:
         _, status = self._checked_tuple(self._sdk.GetStatus(), "GetStatus")
@@ -282,6 +289,18 @@ class AndorIDusBackend(CameraBackend):
         if name in {"DRV_NO_NEW_DATA", "DRV_TIMEOUT"}:
             return False
         raise CameraError(f"WaitForAcquisitionTimeOut: {name} ({ret})")
+
+    def wait_until_idle(self, timeout_s: float = 2.0, poll_s: float = 0.01) -> bool:
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        while True:
+            try:
+                if self.status() is AcquisitionStatus.IDLE:
+                    return True
+            except CameraError:
+                LOG.debug("GetStatus failed while waiting for idle", exc_info=True)
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(max(0.001, float(poll_s)))
 
     def get_oldest_frame(self) -> np.ndarray:
         frame_width = self.frame_width()
