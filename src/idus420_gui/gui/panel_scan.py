@@ -41,6 +41,10 @@ except ImportError:
 
 _SETTINGS_KEY_PREFIX = "scan_panel"
 
+# Stage timing constants mirroring motion/nea_snom.py (kept local to avoid importing the NEA module)
+_EST_STAGE_SPEED_UM_S = 0.2       # µm/s, matches _DEFAULT_SPEED_UM_S
+_EST_MOVE_OVERHEAD_S = 0.325      # poll(0.1) + settle(0.2) + read_xyz(0.025)
+
 # harmonic key → (plot title, colormap, value label, index into demod_results)
 _DEMOD_CHANNELS: dict[str, tuple[str, str, str, int]] = {
     "0w": ("Demod amp @ 0ω (DC)", "viridis", "Mean intensity", 0),
@@ -140,37 +144,41 @@ class ScanPanel(QWidget):
         gg.setColumnStretch(1, 1)
         gg.setColumnStretch(3, 1)
 
-        self.x_start = QDoubleSpinBox()
-        self.x_start.setRange(-1e9, 1e9)
-        self.x_start.setDecimals(1)
-        self.x_start.setValue(50000.0)   # default: 50 µm
-        self.x_start.setSuffix(" nm")
+        self.x_center = QDoubleSpinBox()
+        self.x_center.setRange(-1e6, 1e6)
+        self.x_center.setDecimals(3)
+        self.x_center.setValue(50.0)
+        self.x_center.setSuffix(" µm")
 
-        self.x_step = QDoubleSpinBox()
-        self.x_step.setRange(0.1, 1e9)
-        self.x_step.setDecimals(1)
-        self.x_step.setValue(1000.0)
-        self.x_step.setSuffix(" nm")
+        self.x_length = QDoubleSpinBox()
+        self.x_length.setRange(0.001, 1e6)
+        self.x_length.setDecimals(3)
+        self.x_length.setValue(5.0)
+        self.x_length.setSuffix(" µm")
 
         self.nx = QSpinBox()
         self.nx.setRange(1, 10000)
         self.nx.setValue(5)
 
-        self.y_start = QDoubleSpinBox()
-        self.y_start.setRange(-1e9, 1e9)
-        self.y_start.setDecimals(1)
-        self.y_start.setValue(50000.0)   # default: 50 µm
-        self.y_start.setSuffix(" nm")
+        self.x_res_label = QLabel("Res: 1000.0 nm")
 
-        self.y_step = QDoubleSpinBox()
-        self.y_step.setRange(0.1, 1e9)
-        self.y_step.setDecimals(1)
-        self.y_step.setValue(1000.0)
-        self.y_step.setSuffix(" nm")
+        self.y_center = QDoubleSpinBox()
+        self.y_center.setRange(-1e6, 1e6)
+        self.y_center.setDecimals(3)
+        self.y_center.setValue(50.0)
+        self.y_center.setSuffix(" µm")
+
+        self.y_length = QDoubleSpinBox()
+        self.y_length.setRange(0.001, 1e6)
+        self.y_length.setDecimals(3)
+        self.y_length.setValue(5.0)
+        self.y_length.setSuffix(" µm")
 
         self.ny = QSpinBox()
         self.ny.setRange(1, 10000)
         self.ny.setValue(5)
+
+        self.y_res_label = QLabel("Res: 1000.0 nm")
 
         self.angle = QDoubleSpinBox()
         self.angle.setRange(-180.0, 180.0)
@@ -179,28 +187,33 @@ class ScanPanel(QWidget):
         self.angle.setSuffix(" °")
 
         self.total_label = QLabel("Total: 25 points")
+        self.est_time_label = QLabel("Est. time: --")
 
         row = 0
-        gg.addWidget(_lbl("X start"), row, 0)
-        gg.addWidget(self.x_start, row, 1)
-        gg.addWidget(_lbl("X step"), row, 2)
-        gg.addWidget(self.x_step, row, 3)
+        gg.addWidget(_lbl("X center"), row, 0)
+        gg.addWidget(self.x_center, row, 1)
+        gg.addWidget(_lbl("X length"), row, 2)
+        gg.addWidget(self.x_length, row, 3)
         row += 1
-        gg.addWidget(_lbl("X points"), row, 0)
+        gg.addWidget(_lbl("X pixels"), row, 0)
         gg.addWidget(self.nx, row, 1)
+        gg.addWidget(self.x_res_label, row, 2, 1, 2)
         row += 1
-        gg.addWidget(_lbl("Y start"), row, 0)
-        gg.addWidget(self.y_start, row, 1)
-        gg.addWidget(_lbl("Y step"), row, 2)
-        gg.addWidget(self.y_step, row, 3)
+        gg.addWidget(_lbl("Y center"), row, 0)
+        gg.addWidget(self.y_center, row, 1)
+        gg.addWidget(_lbl("Y length"), row, 2)
+        gg.addWidget(self.y_length, row, 3)
         row += 1
-        gg.addWidget(_lbl("Y points"), row, 0)
+        gg.addWidget(_lbl("Y pixels"), row, 0)
         gg.addWidget(self.ny, row, 1)
+        gg.addWidget(self.y_res_label, row, 2, 1, 2)
         row += 1
         gg.addWidget(_lbl("Angle"), row, 0)
         gg.addWidget(self.angle, row, 1)
         row += 1
         gg.addWidget(self.total_label, row, 0, 1, 4)
+        row += 1
+        gg.addWidget(self.est_time_label, row, 0, 1, 4)
         ctrl_layout.addWidget(grid_box)
 
         # Scan order
@@ -268,50 +281,13 @@ class ScanPanel(QWidget):
         ctrl_container.setMaximumWidth(540)
         splitter.addWidget(ctrl_container)
 
-        # ---- Right: scan maps (2×2 grid) ----
+        # ---- Right: scan maps (2×2 grid, split into two pg widgets) ----
         plot_container = QWidget()
         plot_lay = QVBoxLayout(plot_container)
         plot_lay.setContentsMargins(4, 4, 4, 4)
-        self.map_widget = pg.GraphicsLayoutWidget()
-        self.map_widget.setBackground(theme.BG)
+        plot_lay.setSpacing(2)
 
-        # Two generic demod slots (row 0) — harmonic chosen by selector below
-        for slot_i, default_key in enumerate(self._demod_slot_keys):
-            title, cmap, label, _ = _DEMOD_CHANNELS[default_key]
-            plot = self.map_widget.addPlot(row=0, col=slot_i, title=title)
-            theme._style_plot_item(plot)  # noqa: SLF001
-            plot.setAspectLocked(True)
-            img = pg.ImageItem()
-            plot.addItem(img)
-            try:
-                cb = pg.ColorBarItem(colorMap=cmap, label=label)
-            except Exception:  # noqa: BLE001
-                cb = pg.ColorBarItem(colorMap="viridis", label=label)
-            cb.setImageItem(img, insert_in=plot)
-            setattr(self, f"_demod_plot_{slot_i}", plot)
-            setattr(self, f"_demod_image_{slot_i}", img)
-            setattr(self, f"_demod_cb_{slot_i}", cb)
-
-        # Two generic SNOM slots (row 1) — channel chosen by selector below
-        for slot_i, default_key in enumerate(self._snom_slot_keys):
-            title, cmap, label, _ = _SNOM_CHANNELS[default_key]
-            plot = self.map_widget.addPlot(row=1, col=slot_i, title=title)
-            theme._style_plot_item(plot)  # noqa: SLF001
-            plot.setAspectLocked(True)
-            img = pg.ImageItem()
-            plot.addItem(img)
-            try:
-                cb = pg.ColorBarItem(colorMap=cmap, label=label)
-            except Exception:  # noqa: BLE001
-                cb = pg.ColorBarItem(colorMap="viridis", label=label)
-            cb.setImageItem(img, insert_in=plot)
-            setattr(self, f"_snom_plot_{slot_i}", plot)
-            setattr(self, f"_snom_image_{slot_i}", img)
-            setattr(self, f"_snom_cb_{slot_i}", cb)
-
-        plot_lay.addWidget(self.map_widget)
-
-        # Demod channel selectors — one per slot, live-switchable during scan
+        # -- Demod selector row (above demod plots) --
         demod_sel_row = QHBoxLayout()
         demod_sel_row.setSpacing(8)
         self.demod_combo_0 = QComboBox()
@@ -333,11 +309,50 @@ class ScanPanel(QWidget):
         demod_sel_row.addWidget(self.demod_combo_1)
         demod_sel_row.addStretch(1)
         plot_lay.addLayout(demod_sel_row)
-
         self.demod_combo_0.currentIndexChanged.connect(self._on_demod_channel_changed)
         self.demod_combo_1.currentIndexChanged.connect(self._on_demod_channel_changed)
 
-        # SNOM channel selectors — one per slot, live-switchable during scan
+        # -- Demod plots (panels 1 & 2) --
+        self.demod_widget = pg.GraphicsLayoutWidget()
+        self.demod_widget.setBackground(theme.BG)
+        for slot_i, default_key in enumerate(self._demod_slot_keys):
+            title, cmap, label, _ = _DEMOD_CHANNELS[default_key]
+            plot = self.demod_widget.addPlot(row=0, col=slot_i, title=title)
+            theme._style_plot_item(plot)  # noqa: SLF001
+            plot.setAspectLocked(True)
+            img = pg.ImageItem()
+            plot.addItem(img)
+            try:
+                cb = pg.ColorBarItem(colorMap=cmap, label=label)
+            except Exception:  # noqa: BLE001
+                cb = pg.ColorBarItem(colorMap="viridis", label=label)
+            cb.setImageItem(img, insert_in=plot)
+            setattr(self, f"_demod_plot_{slot_i}", plot)
+            setattr(self, f"_demod_image_{slot_i}", img)
+            setattr(self, f"_demod_cb_{slot_i}", cb)
+        plot_lay.addWidget(self.demod_widget, stretch=1)
+
+        # -- SNOM plots (panels 3 & 4) --
+        self.snom_widget = pg.GraphicsLayoutWidget()
+        self.snom_widget.setBackground(theme.BG)
+        for slot_i, default_key in enumerate(self._snom_slot_keys):
+            title, cmap, label, _ = _SNOM_CHANNELS[default_key]
+            plot = self.snom_widget.addPlot(row=0, col=slot_i, title=title)
+            theme._style_plot_item(plot)  # noqa: SLF001
+            plot.setAspectLocked(True)
+            img = pg.ImageItem()
+            plot.addItem(img)
+            try:
+                cb = pg.ColorBarItem(colorMap=cmap, label=label)
+            except Exception:  # noqa: BLE001
+                cb = pg.ColorBarItem(colorMap="viridis", label=label)
+            cb.setImageItem(img, insert_in=plot)
+            setattr(self, f"_snom_plot_{slot_i}", plot)
+            setattr(self, f"_snom_image_{slot_i}", img)
+            setattr(self, f"_snom_cb_{slot_i}", cb)
+        plot_lay.addWidget(self.snom_widget, stretch=1)
+
+        # -- SNOM selector row (below SNOM plots) --
         snom_sel_row = QHBoxLayout()
         snom_sel_row.setSpacing(8)
         self.snom_combo_0 = QComboBox()
@@ -359,7 +374,6 @@ class ScanPanel(QWidget):
         snom_sel_row.addWidget(self.snom_combo_1)
         snom_sel_row.addStretch(1)
         plot_lay.addLayout(snom_sel_row)
-
         self.snom_combo_0.currentIndexChanged.connect(self._on_snom_channel_changed)
         self.snom_combo_1.currentIndexChanged.connect(self._on_snom_channel_changed)
 
@@ -374,7 +388,9 @@ class ScanPanel(QWidget):
         choose_btn.clicked.connect(self._choose_directory)
         self.start_btn.clicked.connect(self.start)
         self.stop_btn.clicked.connect(self.stop)
-        for w in (self.nx, self.ny):
+        for w in (self.x_center, self.x_length, self.nx,
+                  self.y_center, self.y_length, self.ny,
+                  self.frames_per_point):
             w.valueChanged.connect(self._update_total_label)
 
     # ------------------------------------------------------------------
@@ -398,11 +414,13 @@ class ScanPanel(QWidget):
         self._clear_error()
 
         nx, ny = self.nx.value(), self.ny.value()
+        x_start, x_step = self._axis_grid(self.x_center.value(), self.x_length.value(), nx)
+        y_start, y_step = self._axis_grid(self.y_center.value(), self.y_length.value(), ny)
         grid = ScanGrid(
-            x_start_nm=self.x_start.value(),
-            y_start_nm=self.y_start.value(),
-            x_step_nm=self.x_step.value(),
-            y_step_nm=self.y_step.value(),
+            x_start_nm=x_start,
+            y_start_nm=y_start,
+            x_step_nm=x_step,
+            y_step_nm=y_step,
             nx=nx,
             ny=ny,
             order=self.order_combo.currentData(),
@@ -699,8 +717,8 @@ class ScanPanel(QWidget):
     def _set_running_ui(self, running: bool) -> None:
         for w in [
             self.snom_host,
-            self.x_start, self.x_step, self.nx,
-            self.y_start, self.y_step, self.ny,
+            self.x_center, self.x_length, self.nx,
+            self.y_center, self.y_length, self.ny,
             self.angle,
             self.order_combo,
             self.frames_per_point,
@@ -711,8 +729,40 @@ class ScanPanel(QWidget):
         self.stop_btn.setEnabled(running)
         self.running_changed.emit(running)
 
+    def _axis_grid(self, center_um: float, length_um: float, n: int) -> tuple[float, float]:
+        length_nm = length_um * 1000.0
+        step_nm = length_nm / n if n > 0 else 0.0
+        start_nm = center_um * 1000.0 - length_nm / 2.0 + step_nm / 2.0
+        return start_nm, step_nm
+
+    def _fmt_duration(self, seconds: float) -> str:
+        s = int(seconds)
+        h, rem = divmod(s, 3600)
+        m, sec = divmod(rem, 60)
+        if h > 0:
+            return f"{h}:{m:02d}:{sec:02d}"
+        return f"{m}:{sec:02d}"
+
     def _update_total_label(self) -> None:
-        self.total_label.setText(f"Total: {self.nx.value() * self.ny.value()} points")
+        nx, ny = self.nx.value(), self.ny.value()
+        n = nx * ny
+        self.total_label.setText(f"Total: {n} points")
+        _, x_step = self._axis_grid(self.x_center.value(), self.x_length.value(), nx)
+        _, y_step = self._axis_grid(self.y_center.value(), self.y_length.value(), ny)
+        self.x_res_label.setText(f"Res: {x_step:.1f} nm")
+        self.y_res_label.setText(f"Res: {y_step:.1f} nm")
+
+        frames = self.frames_per_point.value()
+        try:
+            s = self.demod_source.settings()
+            trig_hz = float(getattr(s, "trigger_frequency_hz", 0.0))
+        except Exception:
+            trig_hz = 0.0
+        t_acq = frames / trig_hz if trig_hz > 0 else 0.0
+        step_um = x_step / 1000.0
+        t_move = step_um / _EST_STAGE_SPEED_UM_S + _EST_MOVE_OVERHEAD_S
+        t_total = n * (t_move + t_acq)
+        self.est_time_label.setText(f"Est. time: {self._fmt_duration(t_total)}")
 
     def _choose_directory(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Output directory", self.output_dir.text())
@@ -726,11 +776,11 @@ class ScanPanel(QWidget):
     def _save_settings(self) -> None:
         s = QSettings("idus420_gui", "ScanPanel")
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/snom_host", self.snom_host.text())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/x_start", self.x_start.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/x_step", self.x_step.value())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/x_center", self.x_center.value())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/x_length", self.x_length.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/nx", self.nx.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/y_start", self.y_start.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/y_step", self.y_step.value())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/y_center", self.y_center.value())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/y_length", self.y_length.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/ny", self.ny.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/angle", self.angle.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/order", self.order_combo.currentIndex())
@@ -750,16 +800,16 @@ class ScanPanel(QWidget):
 
         if (v := _f("snom_host")) is not None:
             self.snom_host.setText(str(v))
-        if (v := _f("x_start")) is not None:
-            self.x_start.setValue(float(v))
-        if (v := _f("x_step")) is not None:
-            self.x_step.setValue(float(v))
+        if (v := _f("x_center")) is not None:
+            self.x_center.setValue(float(v))
+        if (v := _f("x_length")) is not None:
+            self.x_length.setValue(float(v))
         if (v := _f("nx")) is not None:
             self.nx.setValue(int(v))
-        if (v := _f("y_start")) is not None:
-            self.y_start.setValue(float(v))
-        if (v := _f("y_step")) is not None:
-            self.y_step.setValue(float(v))
+        if (v := _f("y_center")) is not None:
+            self.y_center.setValue(float(v))
+        if (v := _f("y_length")) is not None:
+            self.y_length.setValue(float(v))
         if (v := _f("ny")) is not None:
             self.ny.setValue(int(v))
         if (v := _f("angle")) is not None:
