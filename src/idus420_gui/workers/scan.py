@@ -16,9 +16,12 @@ from idus420_gui.motion.base import ScanGrid, SnomSample, StageBackend, StagePoi
 from idus420_gui.processing.demodulation import DemodResult, demodulate
 from idus420_gui.processing.roi import integrate_roi
 from idus420_gui.workers.acquisition import (
+    _MAX_REARM_ATTEMPTS,
     DemodulationSettings,
     _read_ready_frames,
-    _timeout_error,
+    _rearm_acquisition,
+    _rearm_message,
+    _timeout_failure_message,
 )
 
 
@@ -137,18 +140,40 @@ class ScanWorker(QThread):
                 self.camera.start()
 
                 consecutive_timeouts = 0
+                rearm_attempts = 0
                 while self._running and len(frames) < n_frames:
                     if not self.camera.wait_next_frame(timeout_ms):
                         consecutive_timeouts += 1
                         if consecutive_timeouts >= 3:
+                            diagnostics = self.camera.acquisition_diagnostics()
+                            remaining = n_frames - len(frames)
+                            if rearm_attempts < _MAX_REARM_ATTEMPTS and remaining > 0:
+                                rearm_attempts += 1
+                                self.error.emit(
+                                    f"Point ({point.ix},{point.iy}): "
+                                    f"{_rearm_message(
+                                        timeout_ms,
+                                        rearm_attempts,
+                                        _MAX_REARM_ATTEMPTS,
+                                        diagnostics,
+                                    )}"
+                                )
+                                _rearm_acquisition(
+                                    self.camera,
+                                    self.settings.exposure_s,
+                                    remaining,
+                                )
+                                consecutive_timeouts = 0
+                                continue
                             self.error.emit(
                                 f"Point ({point.ix},{point.iy}): "
-                                f"{_timeout_error(timeout_ms)}"
+                                f"{_timeout_failure_message(timeout_ms, diagnostics)}"
                             )
                             self._running = False
                             break
                         continue
                     consecutive_timeouts = 0
+                    rearm_attempts = 0
                     ready = _read_ready_frames(self.camera, n_frames - len(frames))
                     for frame in ready:
                         frames.append(frame.copy())

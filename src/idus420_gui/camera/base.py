@@ -191,6 +191,13 @@ class CameraBackend(ABC):
                 return False
             time.sleep(max(0.001, float(poll_s)))
 
+    def acquisition_diagnostics(self) -> str:
+        """Return lightweight acquisition state for timeout/recovery logs."""
+        try:
+            return f"status={self.status().value}"
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not break recovery.
+            return f"status_error={exc}"
+
     @abstractmethod
     def wait_next_frame(self, timeout_ms: int) -> bool: ...
 

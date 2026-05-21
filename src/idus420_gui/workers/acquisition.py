@@ -17,6 +17,7 @@ from idus420_gui.processing.roi import integrate_roi
 
 _LIVE_ACQUISITION_FRAMES = 4_096
 _GUI_UPDATE_INTERVAL_S = 0.05
+_MAX_REARM_ATTEMPTS = 3
 
 
 def _read_ready_frames(backend: CameraBackend, max_frames: int | None = None) -> np.ndarray:
@@ -49,6 +50,36 @@ def _timeout_error(timeout_ms: int) -> str:
         f"No completed camera frames after {timeout_ms / 1000:.1f} s"
         " (×3). Trigger may be present; camera/SDK did not deliver frames."
     )
+
+
+def _rearm_message(
+    timeout_ms: int,
+    attempt: int,
+    max_attempts: int,
+    diagnostics: str,
+) -> str:
+    return (
+        f"No completed camera frames after {timeout_ms / 1000:.1f} s"
+        f" (×3). Re-arming camera acquisition ({attempt}/{max_attempts}). "
+        f"Diagnostics: {diagnostics}"
+    )
+
+
+def _timeout_failure_message(timeout_ms: int, diagnostics: str) -> str:
+    return f"{_timeout_error(timeout_ms)} Diagnostics: {diagnostics}"
+
+
+def _rearm_acquisition(
+    backend: CameraBackend,
+    exposure_s: float,
+    remaining_frames: int,
+) -> None:
+    backend.setup_kinetic(
+        exposure_s,
+        max(1, int(remaining_frames)),
+        TriggerMode.EXTERNAL,
+    )
+    backend.start()
 
 
 @dataclass(frozen=True)
@@ -122,17 +153,40 @@ class DemodulationWorker(QThread):
                 self.backend.start()
                 acquired = 0
                 consecutive_timeouts = 0
+                rearm_attempts = 0
                 while self._running and acquired < acquisition_frames:
                     if not self._running:
                         break
                     if not self.backend.wait_next_frame(timeout_ms):
                         consecutive_timeouts += 1
                         if consecutive_timeouts >= 3:
-                            self.error.emit(_timeout_error(timeout_ms))
+                            diagnostics = self.backend.acquisition_diagnostics()
+                            remaining = acquisition_frames - acquired
+                            if rearm_attempts < _MAX_REARM_ATTEMPTS and remaining > 0:
+                                rearm_attempts += 1
+                                self.error.emit(
+                                    _rearm_message(
+                                        timeout_ms,
+                                        rearm_attempts,
+                                        _MAX_REARM_ATTEMPTS,
+                                        diagnostics,
+                                    )
+                                )
+                                _rearm_acquisition(
+                                    self.backend,
+                                    self.settings.exposure_s,
+                                    remaining,
+                                )
+                                consecutive_timeouts = 0
+                                continue
+                            self.error.emit(
+                                _timeout_failure_message(timeout_ms, diagnostics)
+                            )
                             self._running = False
                             break
                         continue
                     consecutive_timeouts = 0
+                    rearm_attempts = 0
                     ready = _read_ready_frames(
                         self.backend,
                         acquisition_frames - acquired,
@@ -222,14 +276,37 @@ class AcquisitionWorker(QThread):
             self.backend.start()
             start_wall = time.monotonic()
             consecutive_timeouts = 0
+            rearm_attempts = 0
             while self._running and len(all_frames) < self.total_frames:
                 if not self.backend.wait_next_frame(timeout_ms):
                     consecutive_timeouts += 1
                     if consecutive_timeouts >= 3:
-                        self.error.emit(_timeout_error(timeout_ms))
+                        diagnostics = self.backend.acquisition_diagnostics()
+                        remaining = self.total_frames - len(all_frames)
+                        if rearm_attempts < _MAX_REARM_ATTEMPTS and remaining > 0:
+                            rearm_attempts += 1
+                            self.error.emit(
+                                _rearm_message(
+                                    timeout_ms,
+                                    rearm_attempts,
+                                    _MAX_REARM_ATTEMPTS,
+                                    diagnostics,
+                                )
+                            )
+                            _rearm_acquisition(
+                                self.backend,
+                                self.settings.exposure_s,
+                                remaining,
+                            )
+                            consecutive_timeouts = 0
+                            continue
+                        self.error.emit(
+                            _timeout_failure_message(timeout_ms, diagnostics)
+                        )
                         break
                     continue
                 consecutive_timeouts = 0
+                rearm_attempts = 0
                 ready = _read_ready_frames(
                     self.backend,
                     self.total_frames - len(all_frames),
@@ -358,17 +435,40 @@ class LiveSpectrumWorker(QThread):
                 consecutive_timeouts = 0
                 acquired = 0
                 acquisition_frames = max(self.burst_frames, _LIVE_ACQUISITION_FRAMES)
+                rearm_attempts = 0
                 while self._running and acquired < acquisition_frames:
                     if not self._running:
                         break
                     if not self.backend.wait_next_frame(timeout_ms):
                         consecutive_timeouts += 1
                         if consecutive_timeouts >= 3:
-                            self.error.emit(_timeout_error(timeout_ms))
+                            diagnostics = self.backend.acquisition_diagnostics()
+                            remaining = acquisition_frames - acquired
+                            if rearm_attempts < _MAX_REARM_ATTEMPTS and remaining > 0:
+                                rearm_attempts += 1
+                                self.error.emit(
+                                    _rearm_message(
+                                        timeout_ms,
+                                        rearm_attempts,
+                                        _MAX_REARM_ATTEMPTS,
+                                        diagnostics,
+                                    )
+                                )
+                                _rearm_acquisition(
+                                    self.backend,
+                                    self.exposure_s,
+                                    remaining,
+                                )
+                                consecutive_timeouts = 0
+                                continue
+                            self.error.emit(
+                                _timeout_failure_message(timeout_ms, diagnostics)
+                            )
                             self._running = False
                             break
                         continue
                     consecutive_timeouts = 0
+                    rearm_attempts = 0
                     ready = _read_ready_frames(
                         self.backend,
                         acquisition_frames - acquired,

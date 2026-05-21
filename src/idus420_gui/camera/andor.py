@@ -302,6 +302,41 @@ class AndorIDusBackend(CameraBackend):
                 return False
             time.sleep(max(0.001, float(poll_s)))
 
+    def acquisition_diagnostics(self) -> str:
+        parts: list[str] = []
+        try:
+            _, status = self._checked_tuple(self._sdk.GetStatus(), "GetStatus")
+            parts.append(f"status={self._error_name(status)}")
+        except Exception as exc:  # noqa: BLE001
+            parts.append(f"status_error={exc}")
+
+        try:
+            ret, first, last = self._sdk.GetNumberNewImages()
+            name = self._error_name(ret)
+            if ret == self._success_code and last >= first:
+                parts.append(f"new_images={int(last - first + 1)} ({first}-{last})")
+            elif ret == self._success_code:
+                parts.append("new_images=0")
+            else:
+                parts.append(f"new_images_error={name} ({ret})")
+        except Exception as exc:  # noqa: BLE001
+            parts.append(f"new_images_error={exc}")
+
+        if hasattr(self._sdk, "GetAcquisitionProgress"):
+            try:
+                progress = self._sdk.GetAcquisitionProgress()
+                if isinstance(progress, tuple):
+                    ret = int(progress[0])
+                    if ret == self._success_code:
+                        parts.append(f"progress={tuple(progress[1:])}")
+                    else:
+                        parts.append(
+                            f"progress_error={self._error_name(ret)} ({ret})"
+                        )
+            except Exception as exc:  # noqa: BLE001
+                parts.append(f"progress_error={exc}")
+        return ", ".join(parts)
+
     def get_oldest_frame(self) -> np.ndarray:
         frame_width = self.frame_width()
         buf = np.empty(frame_width, dtype=np.uint16)
