@@ -41,6 +41,23 @@ except ImportError:
 
 _SETTINGS_KEY_PREFIX = "scan_panel"
 
+# harmonic key → (plot title, colormap, value label, index into demod_results)
+_DEMOD_CHANNELS: dict[str, tuple[str, str, str, int]] = {
+    "0w": ("Demod amp @ 0ω (DC)", "viridis", "Mean intensity", 0),
+    "1w": ("Demod amp @ 1ω",      "viridis", "Peak amplitude", 1),
+    "2w": ("Demod amp @ 2ω",      "viridis", "Peak amplitude", 2),
+    "3w": ("Demod amp @ 3ω",      "viridis", "Peak amplitude", 3),
+}
+
+# channel key → (plot title, colormap, value label, extractor from SnomSample)
+_SNOM_CHANNELS: dict[str, tuple[str, str, str, object]] = {
+    "Z":   ("SNOM Z",   "viridis", "Z (nm)",      lambda s: s.xyz_nm[2]),
+    "M1A": ("SNOM M1A", "viridis", "Amplitude",   lambda s: s.m_amp[1]),
+    "M1P": ("SNOM M1P", "CET-C1",  "Phase (rad)", lambda s: s.m_phase[1]),
+    "M2A": ("SNOM M2A", "viridis", "Amplitude",   lambda s: s.m_amp[2]),
+    "M2P": ("SNOM M2P", "CET-C1",  "Phase (rad)", lambda s: s.m_phase[2]),
+}
+
 
 class ScanPanel(QWidget):
     """2-D XY raster scan panel using the SNOM Sample motor + Andor camera."""
@@ -55,12 +72,10 @@ class ScanPanel(QWidget):
         self.worker: ScanWorker | None = None
         self._stage: object | None = None  # NeaSnomBackend kept alive across scans
 
-        self._map_demod_0w: np.ndarray | None = None
-        self._map_demod_1w: np.ndarray | None = None
-        self._map_demod_2w: np.ndarray | None = None
-        self._map_demod_3w: np.ndarray | None = None
-        self._map_m1a: np.ndarray | None = None
-        self._map_m1p: np.ndarray | None = None
+        self._map_demod: dict[str, np.ndarray] | None = None
+        self._demod_slot_keys: list[str] = ["0w", "1w"]
+        self._map_snom: dict[str, np.ndarray] | None = None
+        self._snom_slot_keys: list[str] = ["M1A", "M1P"]
         self._scan_is_line: bool = False
         self._scan_line_coords: np.ndarray | None = None  # nm positions along varying axis
 
@@ -260,22 +275,10 @@ class ScanPanel(QWidget):
         self.map_widget = pg.GraphicsLayoutWidget()
         self.map_widget.setBackground(theme.BG)
 
-        _map_specs = [
-            (0, 0, "Demod amp @ 0ω (DC)", "viridis", "Mean intensity",
-             "_map_plot_0w", "_map_image_0w", "_map_cb_0w"),
-            (0, 1, "Demod amp @ 1ω", "viridis", "Peak amplitude",
-             "_map_plot_1w", "_map_image_1w", "_map_cb_1w"),
-            (1, 0, "Demod amp @ 2ω", "viridis", "Peak amplitude",
-             "_map_plot_2w", "_map_image_2w", "_map_cb_2w"),
-            (1, 1, "Demod amp @ 3ω", "viridis", "Peak amplitude",
-             "_map_plot_3w", "_map_image_3w", "_map_cb_3w"),
-            (2, 0, "SNOM M1A", "viridis", "Amplitude",
-             "_map_plot_m1a", "_map_image_m1a", "_map_cb_m1a"),
-            (2, 1, "SNOM M1P", "CET-C1", "Phase (rad)",
-             "_map_plot_m1p", "_map_image_m1p", "_map_cb_m1p"),
-        ]
-        for row, col, title, cmap, label, attr_plot, attr_img, attr_cb in _map_specs:
-            plot = self.map_widget.addPlot(row=row, col=col, title=title)
+        # Two generic demod slots (row 0) — harmonic chosen by selector below
+        for slot_i, default_key in enumerate(self._demod_slot_keys):
+            title, cmap, label, _ = _DEMOD_CHANNELS[default_key]
+            plot = self.map_widget.addPlot(row=0, col=slot_i, title=title)
             theme._style_plot_item(plot)  # noqa: SLF001
             plot.setAspectLocked(True)
             img = pg.ImageItem()
@@ -285,11 +288,81 @@ class ScanPanel(QWidget):
             except Exception:  # noqa: BLE001
                 cb = pg.ColorBarItem(colorMap="viridis", label=label)
             cb.setImageItem(img, insert_in=plot)
-            setattr(self, attr_plot, plot)
-            setattr(self, attr_img, img)
-            setattr(self, attr_cb, cb)
+            setattr(self, f"_demod_plot_{slot_i}", plot)
+            setattr(self, f"_demod_image_{slot_i}", img)
+            setattr(self, f"_demod_cb_{slot_i}", cb)
+
+        # Two generic SNOM slots (row 1) — channel chosen by selector below
+        for slot_i, default_key in enumerate(self._snom_slot_keys):
+            title, cmap, label, _ = _SNOM_CHANNELS[default_key]
+            plot = self.map_widget.addPlot(row=1, col=slot_i, title=title)
+            theme._style_plot_item(plot)  # noqa: SLF001
+            plot.setAspectLocked(True)
+            img = pg.ImageItem()
+            plot.addItem(img)
+            try:
+                cb = pg.ColorBarItem(colorMap=cmap, label=label)
+            except Exception:  # noqa: BLE001
+                cb = pg.ColorBarItem(colorMap="viridis", label=label)
+            cb.setImageItem(img, insert_in=plot)
+            setattr(self, f"_snom_plot_{slot_i}", plot)
+            setattr(self, f"_snom_image_{slot_i}", img)
+            setattr(self, f"_snom_cb_{slot_i}", cb)
 
         plot_lay.addWidget(self.map_widget)
+
+        # Demod channel selectors — one per slot, live-switchable during scan
+        demod_sel_row = QHBoxLayout()
+        demod_sel_row.setSpacing(8)
+        self.demod_combo_0 = QComboBox()
+        self.demod_combo_1 = QComboBox()
+        for key, (ch_title, _c, _l, _idx) in _DEMOD_CHANNELS.items():
+            self.demod_combo_0.addItem(ch_title, key)
+            self.demod_combo_1.addItem(ch_title, key)
+        self.demod_combo_0.setCurrentIndex(
+            list(_DEMOD_CHANNELS.keys()).index(self._demod_slot_keys[0])
+        )
+        self.demod_combo_1.setCurrentIndex(
+            list(_DEMOD_CHANNELS.keys()).index(self._demod_slot_keys[1])
+        )
+        demod_sel_row.addStretch(1)
+        demod_sel_row.addWidget(QLabel("Demod plot 1:"))
+        demod_sel_row.addWidget(self.demod_combo_0)
+        demod_sel_row.addSpacing(24)
+        demod_sel_row.addWidget(QLabel("Demod plot 2:"))
+        demod_sel_row.addWidget(self.demod_combo_1)
+        demod_sel_row.addStretch(1)
+        plot_lay.addLayout(demod_sel_row)
+
+        self.demod_combo_0.currentIndexChanged.connect(self._on_demod_channel_changed)
+        self.demod_combo_1.currentIndexChanged.connect(self._on_demod_channel_changed)
+
+        # SNOM channel selectors — one per slot, live-switchable during scan
+        snom_sel_row = QHBoxLayout()
+        snom_sel_row.setSpacing(8)
+        self.snom_combo_0 = QComboBox()
+        self.snom_combo_1 = QComboBox()
+        for key, (ch_title, _c, _l, _e) in _SNOM_CHANNELS.items():
+            self.snom_combo_0.addItem(ch_title, key)
+            self.snom_combo_1.addItem(ch_title, key)
+        self.snom_combo_0.setCurrentIndex(
+            list(_SNOM_CHANNELS.keys()).index(self._snom_slot_keys[0])
+        )
+        self.snom_combo_1.setCurrentIndex(
+            list(_SNOM_CHANNELS.keys()).index(self._snom_slot_keys[1])
+        )
+        snom_sel_row.addStretch(1)
+        snom_sel_row.addWidget(QLabel("SNOM plot 1:"))
+        snom_sel_row.addWidget(self.snom_combo_0)
+        snom_sel_row.addSpacing(24)
+        snom_sel_row.addWidget(QLabel("SNOM plot 2:"))
+        snom_sel_row.addWidget(self.snom_combo_1)
+        snom_sel_row.addStretch(1)
+        plot_lay.addLayout(snom_sel_row)
+
+        self.snom_combo_0.currentIndexChanged.connect(self._on_snom_channel_changed)
+        self.snom_combo_1.currentIndexChanged.connect(self._on_snom_channel_changed)
+
         splitter.addWidget(plot_container)
 
         splitter.setStretchFactor(0, 0)
@@ -370,12 +443,16 @@ class ScanPanel(QWidget):
         stage = self._stage
 
         nan = np.full((ny, nx), np.nan, dtype=np.float64)
-        self._map_demod_0w = nan.copy()
-        self._map_demod_1w = nan.copy()
-        self._map_demod_2w = nan.copy()
-        self._map_demod_3w = nan.copy()
-        self._map_m1a = nan.copy()
-        self._map_m1p = nan.copy()
+        self._map_demod = {k: nan.copy() for k in _DEMOD_CHANNELS}
+        self._demod_slot_keys = [
+            self.demod_combo_0.currentData(),
+            self.demod_combo_1.currentData(),
+        ]
+        self._map_snom = {k: nan.copy() for k in _SNOM_CHANNELS}
+        self._snom_slot_keys = [
+            self.snom_combo_0.currentData(),
+            self.snom_combo_1.currentData(),
+        ]
 
         self._scan_is_line = (nx == 1 or ny == 1)
         self._rebuild_plots(nx, ny, grid)
@@ -412,20 +489,21 @@ class ScanPanel(QWidget):
 
     def _rebuild_plots(self, nx: int, ny: int, grid: ScanGrid) -> None:
         """Switch each subplot between ImageItem (2D) and PlotDataItem (1D line)."""
-        specs = [
-            ("_map_plot_0w",  "_map_image_0w",  "_map_cb_0w",
-             "_line_0w",  "Demod amp @ 0ω (DC)", "viridis",  "Mean intensity"),
-            ("_map_plot_1w",  "_map_image_1w",  "_map_cb_1w",
-             "_line_1w",  "Demod amp @ 1ω", "viridis",  "Peak amplitude"),
-            ("_map_plot_2w",  "_map_image_2w",  "_map_cb_2w",
-             "_line_2w",  "Demod amp @ 2ω", "viridis",  "Peak amplitude"),
-            ("_map_plot_3w",  "_map_image_3w",  "_map_cb_3w",
-             "_line_3w",  "Demod amp @ 3ω", "viridis",  "Peak amplitude"),
-            ("_map_plot_m1a", "_map_image_m1a", "_map_cb_m1a",
-             "_line_m1a", "SNOM M1A",        "viridis",  "Amplitude"),
-            ("_map_plot_m1p", "_map_image_m1p", "_map_cb_m1p",
-             "_line_m1p", "SNOM M1P",        "CET-C1", "Phase (rad)"),
+        demod_specs = [
+            (
+                f"_demod_plot_{i}", f"_demod_image_{i}", f"_demod_cb_{i}", f"_demod_line_{i}",
+                *_DEMOD_CHANNELS[key][:3],
+            )
+            for i, key in enumerate(self._demod_slot_keys)
         ]
+        snom_specs = [
+            (
+                f"_snom_plot_{i}", f"_snom_image_{i}", f"_snom_cb_{i}", f"_snom_line_{i}",
+                *_SNOM_CHANNELS[key][:3],
+            )
+            for i, key in enumerate(self._snom_slot_keys)
+        ]
+        all_specs = demod_specs + snom_specs
 
         if self._scan_is_line:
             # Build position axis along the varying dimension (nm)
@@ -439,7 +517,7 @@ class ScanPanel(QWidget):
                 x_label = "X position (nm)"
             self._scan_line_coords = np.arange(n) * step
 
-            for attr_plot, _attr_img, attr_cb, attr_line, title, _, y_label in specs:
+            for attr_plot, _attr_img, attr_cb, attr_line, title, _, y_label in all_specs:
                 plot: pg.PlotItem = getattr(self, attr_plot)
                 plot.clear()
                 plot.setAspectLocked(False)
@@ -459,7 +537,7 @@ class ScanPanel(QWidget):
                 cb = getattr(self, attr_cb)
                 cb.hide()
         else:
-            for attr_plot, attr_img, attr_cb, _attr_line, title, _cmap, _y_label in specs:
+            for attr_plot, attr_img, attr_cb, _attr_line, title, _cmap, _y_label in all_specs:
                 plot = getattr(self, attr_plot)
                 plot.clear()
                 plot.setAspectLocked(True)
@@ -487,60 +565,107 @@ class ScanPanel(QWidget):
         self.status_label.setText(f"Completed {current} / {total} points")
 
     def _on_point_data(self, point_index: int, result: PointResult) -> None:
-        if self._map_demod_0w is None:
+        if self._map_demod is None:
             return
         iy, ix = result.point.iy, result.point.ix
         dr = result.demod_results
-        # dr indices: 0 = 0ω, 1 = 1ω, 2 = 2ω, 3 = 3ω  (4 entries per n_block chunk)
-        self._map_demod_0w[iy, ix] = (
-            dr[0].peak_amplitude if len(dr) >= 1 and dr[0] is not None else np.nan
-        )
-        self._map_demod_1w[iy, ix] = (
-            dr[1].peak_amplitude if len(dr) >= 2 and dr[1] is not None else np.nan
-        )
-        self._map_demod_2w[iy, ix] = (
-            dr[2].peak_amplitude if len(dr) >= 3 and dr[2] is not None else np.nan
-        )
-        self._map_demod_3w[iy, ix] = (
-            dr[3].peak_amplitude if len(dr) >= 4 and dr[3] is not None else np.nan
-        )
-        if result.snom_samples:
-            self._map_m1a[iy, ix] = float(
-                np.nanmean([s.m_amp[1] for s in result.snom_samples])
+        for key, (_t, _c, _l, idx) in _DEMOD_CHANNELS.items():
+            self._map_demod[key][iy, ix] = (
+                dr[idx].peak_amplitude
+                if len(dr) > idx and dr[idx] is not None else np.nan
             )
-            self._map_m1p[iy, ix] = float(
-                np.nanmean([s.m_phase[1] for s in result.snom_samples])
-            )
+        if result.snom_samples and self._map_snom is not None:
+            for key, (_t, _c, _l, extract) in _SNOM_CHANNELS.items():
+                self._map_snom[key][iy, ix] = float(
+                    np.nanmean([extract(s) for s in result.snom_samples])  # type: ignore[operator]
+                )
+        self._render_demod_slots()
+        self._render_snom_slots()
 
-        if self._scan_is_line:
-            if self._map_demod_0w.shape[1] == 1:   # nx == 1, vary over Y
-                d0w = self._map_demod_0w[:, 0]
-                d1w = self._map_demod_1w[:, 0]
-                d2w = self._map_demod_2w[:, 0]
-                d3w = self._map_demod_3w[:, 0]
-                m1a = self._map_m1a[:, 0]
-                m1p = self._map_m1p[:, 0]
-            else:                                    # ny == 1, vary over X
-                d0w = self._map_demod_0w[0, :]
-                d1w = self._map_demod_1w[0, :]
-                d2w = self._map_demod_2w[0, :]
-                d3w = self._map_demod_3w[0, :]
-                m1a = self._map_m1a[0, :]
-                m1p = self._map_m1p[0, :]
-            coords = self._scan_line_coords
-            self._line_0w.setData(coords, d0w)
-            self._line_1w.setData(coords, d1w)
-            self._line_2w.setData(coords, d2w)
-            self._line_3w.setData(coords, d3w)
-            self._line_m1a.setData(coords, m1a)
-            self._line_m1p.setData(coords, m1p)
-        else:
-            self._map_image_0w.setImage(self._map_demod_0w.T)
-            self._map_image_1w.setImage(self._map_demod_1w.T)
-            self._map_image_2w.setImage(self._map_demod_2w.T)
-            self._map_image_3w.setImage(self._map_demod_3w.T)
-            self._map_image_m1a.setImage(self._map_m1a.T)
-            self._map_image_m1p.setImage(self._map_m1p.T)
+    def _render_demod_slots(self) -> None:
+        """Repaint both demod plot slots from the stored harmonic maps."""
+        if self._map_demod is None:
+            return
+        for i, key in enumerate(self._demod_slot_keys):
+            arr = self._map_demod[key]
+            if self._scan_is_line:
+                line = getattr(self, f"_demod_line_{i}", None)
+                if line is None:
+                    continue
+                coords = self._scan_line_coords
+                data = arr[:, 0] if arr.shape[1] == 1 else arr[0, :]
+                line.setData(coords, data)
+            else:
+                img = getattr(self, f"_demod_image_{i}", None)
+                if img is not None:
+                    img.setImage(arr.T)
+
+    def _restyle_demod_slots(self) -> None:
+        """Update titles, colormaps and colorbar labels for both demod slots."""
+        for i, key in enumerate(self._demod_slot_keys):
+            title, cmap, label, _ = _DEMOD_CHANNELS[key]
+            plot: pg.PlotItem = getattr(self, f"_demod_plot_{i}")
+            plot.setTitle(title)
+            cb = getattr(self, f"_demod_cb_{i}")
+            try:
+                cb.setColorMap(cmap)
+            except Exception:  # noqa: BLE001
+                cb.setColorMap("viridis")
+            cb.setLabel(label)
+
+    def _on_demod_channel_changed(self) -> None:
+        """Handle live change of either demod channel selector."""
+        self._demod_slot_keys = [
+            self.demod_combo_0.currentData(),
+            self.demod_combo_1.currentData(),
+        ]
+        self._restyle_demod_slots()
+        if self._map_demod is not None:
+            self._render_demod_slots()
+
+    def _render_snom_slots(self) -> None:
+        """Repaint both SNOM plot slots from the stored channel maps."""
+        if self._map_snom is None:
+            return
+        for i, key in enumerate(self._snom_slot_keys):
+            arr = self._map_snom[key]
+            if self._scan_is_line:
+                line = getattr(self, f"_snom_line_{i}", None)
+                if line is None:
+                    continue
+                coords = self._scan_line_coords
+                if arr.shape[1] == 1:
+                    data = arr[:, 0]
+                else:
+                    data = arr[0, :]
+                line.setData(coords, data)
+            else:
+                img = getattr(self, f"_snom_image_{i}", None)
+                if img is not None:
+                    img.setImage(arr.T)
+
+    def _restyle_snom_slots(self) -> None:
+        """Update titles, colormaps and colorbar labels for both SNOM slots."""
+        for i, key in enumerate(self._snom_slot_keys):
+            title, cmap, label, _ = _SNOM_CHANNELS[key]
+            plot: pg.PlotItem = getattr(self, f"_snom_plot_{i}")
+            plot.setTitle(title)
+            cb = getattr(self, f"_snom_cb_{i}")
+            try:
+                cb.setColorMap(cmap)
+            except Exception:  # noqa: BLE001
+                cb.setColorMap("viridis")
+            cb.setLabel(label)
+
+    def _on_snom_channel_changed(self) -> None:
+        """Handle live change of either SNOM channel selector."""
+        self._snom_slot_keys = [
+            self.snom_combo_0.currentData(),
+            self.snom_combo_1.currentData(),
+        ]
+        self._restyle_snom_slots()
+        if self._map_snom is not None:
+            self._render_snom_slots()
 
     def _on_scan_finished(self, result: ScanResult) -> None:
         if not result.point_results:
@@ -612,6 +737,10 @@ class ScanPanel(QWidget):
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/frames_per_point", self.frames_per_point.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/output_dir", self.output_dir.text())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/stem", self.stem.text())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/demod_combo_0", self.demod_combo_0.currentIndex())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/demod_combo_1", self.demod_combo_1.currentIndex())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/snom_combo_0", self.snom_combo_0.currentIndex())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/snom_combo_1", self.snom_combo_1.currentIndex())
 
     def _restore_settings(self) -> None:
         s = QSettings("idus420_gui", "ScanPanel")
@@ -644,6 +773,24 @@ class ScanPanel(QWidget):
         if (v := _f("stem")) is not None:
             self.stem.setText(str(v))
 
+        if (v := _f("demod_combo_0")) is not None:
+            self.demod_combo_0.setCurrentIndex(int(v))
+        if (v := _f("demod_combo_1")) is not None:
+            self.demod_combo_1.setCurrentIndex(int(v))
+        self._demod_slot_keys = [
+            self.demod_combo_0.currentData(),
+            self.demod_combo_1.currentData(),
+        ]
+        self._restyle_demod_slots()
+        if (v := _f("snom_combo_0")) is not None:
+            self.snom_combo_0.setCurrentIndex(int(v))
+        if (v := _f("snom_combo_1")) is not None:
+            self.snom_combo_1.setCurrentIndex(int(v))
+        self._snom_slot_keys = [
+            self.snom_combo_0.currentData(),
+            self.snom_combo_1.currentData(),
+        ]
+        self._restyle_snom_slots()
         self._update_total_label()
 
 
