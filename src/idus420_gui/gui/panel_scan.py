@@ -611,7 +611,7 @@ class ScanPanel(QWidget):
                 cb.setColorMap(cmap)
             except Exception:  # noqa: BLE001
                 cb.setColorMap("viridis")
-            cb.setLabel(label)
+            cb.axis.setLabel(label)
 
     def _on_demod_channel_changed(self) -> None:
         """Handle live change of either demod channel selector."""
@@ -655,7 +655,7 @@ class ScanPanel(QWidget):
                 cb.setColorMap(cmap)
             except Exception:  # noqa: BLE001
                 cb.setColorMap("viridis")
-            cb.setLabel(label)
+            cb.axis.setLabel(label)
 
     def _on_snom_channel_changed(self) -> None:
         """Handle live change of either SNOM channel selector."""
