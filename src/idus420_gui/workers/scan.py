@@ -149,14 +149,14 @@ class ScanWorker(QThread):
                             remaining = n_frames - len(frames)
                             if rearm_attempts < _MAX_REARM_ATTEMPTS and remaining > 0:
                                 rearm_attempts += 1
+                                rearm_msg = _rearm_message(
+                                    timeout_ms,
+                                    rearm_attempts,
+                                    _MAX_REARM_ATTEMPTS,
+                                    diagnostics,
+                                )
                                 self.error.emit(
-                                    f"Point ({point.ix},{point.iy}): "
-                                    f"{_rearm_message(
-                                        timeout_ms,
-                                        rearm_attempts,
-                                        _MAX_REARM_ATTEMPTS,
-                                        diagnostics,
-                                    )}"
+                                    f"Point ({point.ix},{point.iy}): {rearm_msg}"
                                 )
                                 _rearm_acquisition(
                                     self.camera,
