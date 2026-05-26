@@ -231,13 +231,13 @@ class ScanWorker(QThread):
                     dtype=np.float64,
                 ) if frames else np.empty(0, dtype=np.float64)
 
-                if roi_arr.size >= 4:
+                if roi_arr.size >= 1:
                     chunk = roi_arr[: self.settings.n_block]
-                    # 0ω: DC mean — synthesise a fake DemodResult.
+                    # 0ω: DC mean — always computed regardless of frame count.
                     try:
                         dc = float(np.mean(chunk))
                         f_axis = np.fft.rfftfreq(
-                            chunk.size,
+                            max(1, chunk.size),
                             d=1.0 / self.settings.trigger_frequency_hz,
                         )
                         demod_results.append(
@@ -257,29 +257,30 @@ class ScanWorker(QThread):
                                 chunk.size,
                             )
                         )
-                    # 1ω, 2ω, 3ω
-                    for f_target in (
-                        self.settings.f_expected,
-                        2.0 * self.settings.f_expected,
-                        3.0 * self.settings.f_expected,
-                    ):
-                        try:
-                            dr = demodulate(
-                                chunk,
-                                self.settings.trigger_frequency_hz,
-                                f_target,
-                                self.settings.f_search_halfwidth,
-                                self.settings.window,
-                            )
-                            demod_results.append(dr)
-                        except Exception:  # noqa: BLE001
-                            demod_results.append(
-                                _empty_demod_result(
-                                    f_target,
+                    # 1ω, 2ω, 3ω: only when enough samples for FFT demodulation.
+                    if chunk.size >= 4:
+                        for f_target in (
+                            self.settings.f_expected,
+                            2.0 * self.settings.f_expected,
+                            3.0 * self.settings.f_expected,
+                        ):
+                            try:
+                                dr = demodulate(
+                                    chunk,
                                     self.settings.trigger_frequency_hz,
-                                    chunk.size,
+                                    f_target,
+                                    self.settings.f_search_halfwidth,
+                                    self.settings.window,
                                 )
-                            )
+                                demod_results.append(dr)
+                            except Exception:  # noqa: BLE001
+                                demod_results.append(
+                                    _empty_demod_result(
+                                        f_target,
+                                        self.settings.trigger_frequency_hz,
+                                        chunk.size,
+                                    )
+                                )
 
                 pt_result = PointResult(
                     point=point,

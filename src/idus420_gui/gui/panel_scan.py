@@ -232,7 +232,7 @@ class ScanPanel(QWidget):
         acq_g.setColumnStretch(1, 1)
 
         self.frames_per_point = QSpinBox()
-        self.frames_per_point.setRange(4, 100_000_000)
+        self.frames_per_point.setRange(1, 100_000_000)
         self.frames_per_point.setValue(100)
         acq_g.addWidget(_lbl("Frames / point"), 0, 0)
         acq_g.addWidget(self.frames_per_point, 0, 1)
@@ -287,7 +287,12 @@ class ScanPanel(QWidget):
         plot_lay.setContentsMargins(4, 4, 4, 4)
         plot_lay.setSpacing(2)
 
-        # -- Demod selector row (above demod plots) --
+        # -- Demod section (hidden when frames/point == 1) --
+        self.demod_section = QWidget()
+        demod_sec_lay = QVBoxLayout(self.demod_section)
+        demod_sec_lay.setContentsMargins(0, 0, 0, 0)
+        demod_sec_lay.setSpacing(2)
+
         demod_sel_row = QHBoxLayout()
         demod_sel_row.setSpacing(8)
         self.demod_combo_0 = QComboBox()
@@ -308,11 +313,10 @@ class ScanPanel(QWidget):
         demod_sel_row.addWidget(QLabel("Demod plot 2:"))
         demod_sel_row.addWidget(self.demod_combo_1)
         demod_sel_row.addStretch(1)
-        plot_lay.addLayout(demod_sel_row)
+        demod_sec_lay.addLayout(demod_sel_row)
         self.demod_combo_0.currentIndexChanged.connect(self._on_demod_channel_changed)
         self.demod_combo_1.currentIndexChanged.connect(self._on_demod_channel_changed)
 
-        # -- Demod plots (panels 1 & 2) --
         self.demod_widget = pg.GraphicsLayoutWidget()
         self.demod_widget.setBackground(theme.BG)
         for slot_i, default_key in enumerate(self._demod_slot_keys):
@@ -330,7 +334,32 @@ class ScanPanel(QWidget):
             setattr(self, f"_demod_plot_{slot_i}", plot)
             setattr(self, f"_demod_image_{slot_i}", img)
             setattr(self, f"_demod_cb_{slot_i}", cb)
-        plot_lay.addWidget(self.demod_widget, stretch=1)
+        demod_sec_lay.addWidget(self.demod_widget)
+        plot_lay.addWidget(self.demod_section, stretch=1)
+
+        # -- Average signal section (shown when frames/point == 1) --
+        self.avg_section = QWidget()
+        avg_sec_lay = QVBoxLayout(self.avg_section)
+        avg_sec_lay.setContentsMargins(0, 0, 0, 0)
+        avg_sec_lay.setSpacing(2)
+        self.avg_widget = pg.GraphicsLayoutWidget()
+        self.avg_widget.setBackground(theme.BG)
+        _avg_plot = self.avg_widget.addPlot(row=0, col=0, title="Average Signal")
+        theme._style_plot_item(_avg_plot)  # noqa: SLF001
+        _avg_plot.setAspectLocked(True)
+        _avg_img = pg.ImageItem()
+        _avg_plot.addItem(_avg_img)
+        try:
+            _avg_cb = pg.ColorBarItem(colorMap="viridis", label="Mean intensity")
+        except Exception:  # noqa: BLE001
+            _avg_cb = pg.ColorBarItem(colorMap="viridis", label="Mean intensity")
+        _avg_cb.setImageItem(_avg_img, insert_in=_avg_plot)
+        self._avg_plot = _avg_plot
+        self._avg_image = _avg_img
+        self._avg_cb = _avg_cb
+        avg_sec_lay.addWidget(self.avg_widget)
+        self.avg_section.hide()
+        plot_lay.addWidget(self.avg_section, stretch=1)
 
         # -- SNOM plots (panels 3 & 4) --
         self.snom_widget = pg.GraphicsLayoutWidget()
@@ -392,6 +421,16 @@ class ScanPanel(QWidget):
                   self.y_center, self.y_length, self.ny,
                   self.frames_per_point):
             w.valueChanged.connect(self._update_total_label)
+        self.frames_per_point.valueChanged.connect(self._update_mode_ui)
+
+    # ------------------------------------------------------------------
+    # Mode switching (demod vs average-only)
+    # ------------------------------------------------------------------
+
+    def _update_mode_ui(self) -> None:
+        single = self.frames_per_point.value() == 1
+        self.demod_section.setVisible(not single)
+        self.avg_section.setVisible(single)
 
     # ------------------------------------------------------------------
     # Scan control
@@ -521,7 +560,8 @@ class ScanPanel(QWidget):
             )
             for i, key in enumerate(self._snom_slot_keys)
         ]
-        all_specs = demod_specs + snom_specs
+        avg_specs = [("_avg_plot", "_avg_image", "_avg_cb", "_avg_line", "Average Signal", "viridis", "Mean intensity")]
+        all_specs = demod_specs + snom_specs + avg_specs
 
         if self._scan_is_line:
             # Build position axis along the varying dimension (nm)
@@ -597,7 +637,10 @@ class ScanPanel(QWidget):
                 self._map_snom[key][iy, ix] = float(
                     np.nanmean([extract(s) for s in result.snom_samples])  # type: ignore[operator]
                 )
-        self._render_demod_slots()
+        if self.frames_per_point.value() == 1:
+            self._render_avg_slot()
+        else:
+            self._render_demod_slots()
         self._render_snom_slots()
 
     def _render_demod_slots(self) -> None:
@@ -617,6 +660,21 @@ class ScanPanel(QWidget):
                 img = getattr(self, f"_demod_image_{i}", None)
                 if img is not None:
                     img.setImage(arr.T)
+
+    def _render_avg_slot(self) -> None:
+        """Repaint the single average signal plot from the stored 0ω map."""
+        if self._map_demod is None:
+            return
+        arr = self._map_demod["0w"]
+        if self._scan_is_line:
+            line = getattr(self, "_avg_line", None)
+            if line is None:
+                return
+            coords = self._scan_line_coords
+            data = arr[:, 0] if arr.shape[1] == 1 else arr[0, :]
+            line.setData(coords, data)
+        else:
+            self._avg_image.setImage(arr.T)
 
     def _restyle_demod_slots(self) -> None:
         """Update titles, colormaps and colorbar labels for both demod slots."""
