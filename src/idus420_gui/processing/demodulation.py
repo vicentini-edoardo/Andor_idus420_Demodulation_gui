@@ -46,14 +46,24 @@ def demodulate(
     spectrum = np.abs(np.fft.rfft(windowed)) * 2.0 / (y.size * coherent_gain)
     f_axis = np.fft.rfftfreq(y.size, d=1.0 / sample_rate_hz)
 
+    nyquist = sample_rate_hz / 2.0
     low = max(0.0, f_expected - f_search_halfwidth)
-    high = min(sample_rate_hz / 2.0, f_expected + f_search_halfwidth)
-    mask = (f_axis >= low) & (f_axis <= high)
-    if not np.any(mask):
-        raise ValueError("Search band contains no FFT bins.")
+    high = min(nyquist, f_expected + f_search_halfwidth)
+    if low > high:
+        raise ValueError(
+            "Search band lies entirely outside the available frequency range "
+            f"(0..{nyquist:g} Hz)."
+        )
 
-    band_indices = np.flatnonzero(mask)
-    peak_idx = int(band_indices[np.argmax(spectrum[band_indices])])
+    mask = (f_axis >= low) & (f_axis <= high)
+    if np.any(mask):
+        band_indices = np.flatnonzero(mask)
+        peak_idx = int(band_indices[np.argmax(spectrum[band_indices])])
+    else:
+        # The band is valid but narrower than one FFT bin: snap to the nearest
+        # bin to the band center rather than failing outright.
+        center = min(max(f_expected, low), high)
+        peak_idx = int(np.argmin(np.abs(f_axis - center)))
     peak_frequency, peak_amplitude = _parabolic_peak(f_axis, spectrum, peak_idx)
 
     noise_mask = ~mask

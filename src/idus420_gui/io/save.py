@@ -24,7 +24,7 @@ def save_run(
     demod_results: list[DemodResult],
     metadata: dict[str, Any],
 ) -> None:
-    """Save by extension, supporting `.npz` and `.h5`."""
+    """Save by extension, supporting `.npz`, `.h5`/`.hdf5`, and `.txt`."""
     target = Path(path)
     if target.suffix == ".npz":
         save_npz(target, frames, roi_timeseries, demod_results, metadata)
@@ -32,7 +32,10 @@ def save_run(
     if target.suffix in {".h5", ".hdf5"}:
         save_h5(target, frames, roi_timeseries, demod_results, metadata)
         return
-    raise ValueError("Output path must end with .npz, .h5, or .hdf5.")
+    if target.suffix == ".txt":
+        save_txt(target, frames, roi_timeseries, demod_results, metadata)
+        return
+    raise ValueError("Output path must end with .npz, .h5, .hdf5, or .txt.")
 
 
 def save_npz(

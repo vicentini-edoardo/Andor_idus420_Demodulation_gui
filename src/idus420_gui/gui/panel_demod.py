@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Literal, cast
+
 import pyqtgraph as pg
-from PyQt6.QtCore import QSettings, Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -21,7 +23,9 @@ from PyQt6.QtWidgets import (
 
 from idus420_gui.camera.base import CameraBackend
 from idus420_gui.gui import theme
+from idus420_gui.gui._helpers import PanelSettings, roi_error_message, stop_worker
 from idus420_gui.gui.widgets import ReadoutLabel
+from idus420_gui.processing.demodulation import DemodResult
 from idus420_gui.workers.acquisition import DemodulationSettings, DemodulationWorker
 
 _SETTINGS_KEY_PREFIX = "demod_panel"
@@ -195,7 +199,7 @@ class DemodPanel(QWidget):
         self.plot_widget.ci.layout.setRowStretchFactor(2, 2)
 
         for pi in (self.spectrum_plot, self.time_plot, self.fft_plot, self.history_plot):
-            theme._style_plot_item(pi)  # noqa: SLF001
+            theme.style_plot_item(pi)
 
         self.spectrum_curve = self.spectrum_plot.plot(
             pen=pg.mkPen(theme.CURVE_YELLOW, width=1.5)
@@ -245,22 +249,31 @@ class DemodPanel(QWidget):
         if not self.backend:
             self.log_message.emit("No camera backend is connected.")
             return
-        if not self._validate_roi():
+        if not self.validate_roi():
             return
-        self._set_running_ui(True)
+        # Ensure any previous worker has fully stopped before starting a new one.
+        if self.worker is not None and self.worker.isRunning():
+            stop_worker(self.worker)
         self.peak_history.clear()
         self.worker = DemodulationWorker(self.backend, self.settings(), continuous=True)
         self.worker.frame_acquired.connect(lambda frame: self.spectrum_curve.setData(frame))
         self.worker.block_complete.connect(lambda ts: self.time_curve.setData(ts))
         self.worker.demod_result.connect(self._handle_result)
         self.worker.error.connect(self.log_message.emit)
-        self.worker.worker_finished.connect(lambda: self._set_running_ui(False))
+        self.worker.worker_finished.connect(self._on_worker_finished)
+        self._set_running_ui(True)
         self.worker.start()
-        self.running_changed.emit(True)
 
     def stop(self) -> None:
+        # The Stop UI state is applied when the worker confirms it has finished.
         if self.worker:
             self.worker.stop()
+
+    def _on_worker_finished(self) -> None:
+        # Ignore a late signal from a worker that has already been replaced.
+        if self.sender() is not self.worker:
+            return
+        self.worker = None
         self._set_running_ui(False)
 
     def settings(self) -> DemodulationSettings:
@@ -269,36 +282,35 @@ class DemodPanel(QWidget):
             trigger_frequency_hz=self.trigger_spin.value(),
             pixel_start=self.roi_start.value(),
             pixel_end=self.roi_end.value(),
-            roi_method=self.roi_method.currentText(),  # type: ignore[arg-type]
+            roi_method=cast(Literal["sum", "mean"], self.roi_method.currentText()),
             n_block=self.n_block.value(),
             f_expected=self.expected.value(),
             f_search_halfwidth=self.search.value(),
-            window=self.window_combo.currentText(),  # type: ignore[arg-type]
+            window=cast(
+                Literal["hann", "blackman", "none"], self.window_combo.currentText()
+            ),
         )
 
-    def _validate_roi(self) -> bool:
-        start = self.roi_start.value()
-        end = self.roi_end.value()
-        if start > end:
-            self.log_message.emit("ROI start must be ≤ ROI end.")
-            return False
-        if end >= self._detector_width:
-            self.log_message.emit(
-                f"ROI end {end} exceeds detector width {self._detector_width}."
-            )
+    def validate_roi(self) -> bool:
+        """Validate the ROI; emit a log message and return ``False`` if invalid."""
+        error = roi_error_message(
+            self.roi_start.value(), self.roi_end.value(), self._detector_width
+        )
+        if error:
+            self.log_message.emit(error)
             return False
         return True
 
-    def _handle_result(self, result: object) -> None:
-        self.fft_curve.setData(result.f_axis, result.spectrum)  # type: ignore[attr-defined]
-        self.fft_peak_line.setPos(float(result.peak_frequency))  # type: ignore[attr-defined]
-        self.peak_history.append(float(result.peak_amplitude))  # type: ignore[attr-defined]
+    def _handle_result(self, result: DemodResult) -> None:
+        self.fft_curve.setData(result.f_axis, result.spectrum)
+        self.fft_peak_line.setPos(float(result.peak_frequency))
+        self.peak_history.append(float(result.peak_amplitude))
         self.peak_history = self.peak_history[-600:]
         self.history_curve.setData(self.peak_history)
         self.readout.setText(
-            f"Peak: {result.peak_amplitude:.4g} | "  # type: ignore[attr-defined]
-            f"Frequency: {result.peak_frequency:.4g} Hz | "  # type: ignore[attr-defined]
-            f"SNR: {result.snr:.3g}"  # type: ignore[attr-defined]
+            f"Peak: {result.peak_amplitude:.4g} | "
+            f"Frequency: {result.peak_frequency:.4g} Hz | "
+            f"SNR: {result.snr:.3g}"
         )
 
     def _update_roi_region(self) -> None:
@@ -332,45 +344,30 @@ class DemodPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _save_settings(self) -> None:
-        s = QSettings("idus420_gui", "DemodPanel")
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/exposure_s", self.exposure_spin.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/trigger_hz", self.trigger_spin.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_start", self.roi_start.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_end", self.roi_end.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_method", self.roi_method.currentText())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/n_block", self.n_block.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/f_expected", self.expected.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/f_search_hw", self.search.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/window", self.window_combo.currentText())
+        s = PanelSettings("DemodPanel", _SETTINGS_KEY_PREFIX)
+        s.set("exposure_s", self.exposure_spin.value())
+        s.set("trigger_hz", self.trigger_spin.value())
+        s.set("roi_start", self.roi_start.value())
+        s.set("roi_end", self.roi_end.value())
+        s.set("roi_method", self.roi_method.currentText())
+        s.set("n_block", self.n_block.value())
+        s.set("f_expected", self.expected.value())
+        s.set("f_search_hw", self.search.value())
+        s.set("window", self.window_combo.currentText())
 
     def _restore_settings(self) -> None:
-        s = QSettings("idus420_gui", "DemodPanel")
-
-        def fval(key: str, default: float) -> float:
-            v = s.value(f"{_SETTINGS_KEY_PREFIX}/{key}")
-            return float(v) if v is not None else default
-
-        def ival(key: str, default: int) -> int:
-            v = s.value(f"{_SETTINGS_KEY_PREFIX}/{key}")
-            return int(v) if v is not None else default
-
-        def sval(key: str, default: str) -> str:
-            v = s.value(f"{_SETTINGS_KEY_PREFIX}/{key}")
-            return str(v) if v is not None else default
-
-        self.exposure_spin.setValue(fval("exposure_s", 0.001))
-        self.trigger_spin.setValue(fval("trigger_hz", 500.0))
-        self.roi_start.setValue(ival("roi_start", 480))
-        self.roi_end.setValue(ival("roi_end", 560))
-        method = sval("roi_method", "sum")
-        idx = self.roi_method.findText(method)
+        s = PanelSettings("DemodPanel", _SETTINGS_KEY_PREFIX)
+        self.exposure_spin.setValue(s.get_float("exposure_s", 0.001))
+        self.trigger_spin.setValue(s.get_float("trigger_hz", 500.0))
+        self.roi_start.setValue(s.get_int("roi_start", 480))
+        self.roi_end.setValue(s.get_int("roi_end", 560))
+        idx = self.roi_method.findText(s.get_str("roi_method", "sum"))
         if idx >= 0:
             self.roi_method.setCurrentIndex(idx)
-        self.n_block.setValue(ival("n_block", 512))
-        self.expected.setValue(fval("f_expected", 37.0))
-        self.search.setValue(fval("f_search_hw", 5.0))
-        window = sval("window", "hann")
-        idx = self.window_combo.findText(window)
+        self.n_block.setValue(s.get_int("n_block", 512))
+        self.expected.setValue(s.get_float("f_expected", 37.0))
+        self.search.setValue(s.get_float("f_search_hw", 5.0))
+        idx = self.window_combo.findText(s.get_str("window", "hann"))
         if idx >= 0:
             self.window_combo.setCurrentIndex(idx)
         self._update_resolution()

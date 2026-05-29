@@ -6,7 +6,7 @@ from collections import deque
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QSettings, Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QDoubleSpinBox,
@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 
 from idus420_gui.camera.base import CameraBackend
 from idus420_gui.gui import theme
+from idus420_gui.gui._helpers import PanelSettings, roi_error_message, stop_worker
 from idus420_gui.gui.widgets import ReadoutLabel
 from idus420_gui.workers.acquisition import LiveSpectrumWorker
 
@@ -164,7 +165,7 @@ class LiveSpectrumPanel(QWidget):
         self.plot_widget.ci.layout.setRowStretchFactor(1, 2)
 
         for pi in (self.spectrum_plot, self.history_plot):
-            theme._style_plot_item(pi)  # noqa: SLF001
+            theme.style_plot_item(pi)
 
         self.spectrum_curve = self.spectrum_plot.plot(
             pen=pg.mkPen(theme.CURVE_YELLOW, width=2)
@@ -206,6 +207,9 @@ class LiveSpectrumPanel(QWidget):
             return
         if not self._validate_roi():
             return
+        # Ensure any previous worker has fully stopped before starting a new one.
+        if self.worker is not None and self.worker.isRunning():
+            stop_worker(self.worker)
         self._history_t.clear()
         self._history_roi.clear()
         self._last_roi_sum = None
@@ -223,13 +227,20 @@ class LiveSpectrumPanel(QWidget):
         self.worker.frame_acquired.connect(self._update_frame)
         self.worker.roi_sample.connect(self._update_roi_history)
         self.worker.error.connect(self.log_message.emit)
-        self.worker.worker_finished.connect(lambda: self._set_running_ui(False))
+        self.worker.worker_finished.connect(self._on_worker_finished)
         self._set_running_ui(True)
         self.worker.start()
 
     def stop(self) -> None:
+        # The Stop UI state is applied when the worker confirms it has finished.
         if self.worker:
             self.worker.stop()
+
+    def _on_worker_finished(self) -> None:
+        # Ignore a late signal from a worker that has already been replaced.
+        if self.sender() is not self.worker:
+            return
+        self.worker = None
         self._set_running_ui(False)
 
     def _update_frame(self, frame: object) -> None:
@@ -297,15 +308,11 @@ class LiveSpectrumPanel(QWidget):
         )
 
     def _validate_roi(self) -> bool:
-        start = self.roi_start.value()
-        end = self.roi_end.value()
-        if start > end:
-            self.log_message.emit("ROI start must be ≤ ROI end.")
-            return False
-        if end >= self._detector_width:
-            self.log_message.emit(
-                f"ROI end {end} exceeds detector width {self._detector_width}."
-            )
+        error = roi_error_message(
+            self.roi_start.value(), self.roi_end.value(), self._detector_width
+        )
+        if error:
+            self.log_message.emit(error)
             return False
         return True
 
@@ -353,34 +360,22 @@ class LiveSpectrumPanel(QWidget):
         self.running_changed.emit(running)
 
     def _save_settings(self) -> None:
-        s = QSettings("idus420_gui", "LiveSpectrumPanel")
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/exposure_s", self.exposure_spin.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/trigger_hz", self.trigger_spin.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/burst_frames", self.burst_spin.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_start", self.roi_start.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_end", self.roi_end.value())
-        s.setValue(
-            f"{_SETTINGS_KEY_PREFIX}/history_max_points",
-            self.history_points_spin.value(),
-        )
+        s = PanelSettings("LiveSpectrumPanel", _SETTINGS_KEY_PREFIX)
+        s.set("exposure_s", self.exposure_spin.value())
+        s.set("trigger_hz", self.trigger_spin.value())
+        s.set("burst_frames", self.burst_spin.value())
+        s.set("roi_start", self.roi_start.value())
+        s.set("roi_end", self.roi_end.value())
+        s.set("history_max_points", self.history_points_spin.value())
 
     def _restore_settings(self) -> None:
-        s = QSettings("idus420_gui", "LiveSpectrumPanel")
-
-        def fval(key: str, default: float) -> float:
-            v = s.value(f"{_SETTINGS_KEY_PREFIX}/{key}")
-            return float(v) if v is not None else default
-
-        def ival(key: str, default: int) -> int:
-            v = s.value(f"{_SETTINGS_KEY_PREFIX}/{key}")
-            return int(v) if v is not None else default
-
-        self.exposure_spin.setValue(fval("exposure_s", 0.001))
-        self.trigger_spin.setValue(fval("trigger_hz", 500.0))
-        self.burst_spin.setValue(ival("burst_frames", 64))
-        self.roi_start.setValue(ival("roi_start", 480))
-        self.roi_end.setValue(ival("roi_end", 560))
-        self.history_points_spin.setValue(ival("history_max_points", 1000))
+        s = PanelSettings("LiveSpectrumPanel", _SETTINGS_KEY_PREFIX)
+        self.exposure_spin.setValue(s.get_float("exposure_s", 0.001))
+        self.trigger_spin.setValue(s.get_float("trigger_hz", 500.0))
+        self.burst_spin.setValue(s.get_int("burst_frames", 64))
+        self.roi_start.setValue(s.get_int("roi_start", 480))
+        self.roi_end.setValue(s.get_int("roi_end", 560))
+        self.history_points_spin.setValue(s.get_int("history_max_points", 1000))
         self._update_roi_region()
 
 
