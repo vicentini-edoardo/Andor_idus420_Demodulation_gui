@@ -346,7 +346,7 @@ def apply_theme(app: QApplication) -> None:
 # Plot helpers
 # ---------------------------------------------------------------------------
 
-def _style_plot_item(plot_item: pg.PlotItem) -> None:
+def style_plot_item(plot_item: pg.PlotItem) -> None:
     """Apply consistent axis/grid styling to a pyqtgraph PlotItem."""
     for axis_name in ("bottom", "left", "top", "right"):
         ax = plot_item.getAxis(axis_name)
@@ -369,7 +369,7 @@ def make_plot(title: str = "", x_label: str = "", y_label: str = "") -> pg.PlotW
     widget = pg.PlotWidget(title=title)
     widget.setBackground(BG)
     pi = widget.getPlotItem()
-    _style_plot_item(pi)
+    style_plot_item(pi)
     if x_label:
         pi.setLabel("bottom", x_label, color=TEXT_MUTED)
     if y_label:
@@ -382,4 +382,4 @@ def style_graphics_layout(glw: pg.GraphicsLayoutWidget) -> None:
     glw.setBackground(BG)
     for item in glw.ci.items:
         if isinstance(item, pg.PlotItem):
-            _style_plot_item(item)
+            style_plot_item(item)

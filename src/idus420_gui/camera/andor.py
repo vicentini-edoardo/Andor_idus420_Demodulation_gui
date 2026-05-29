@@ -17,7 +17,6 @@ from idus420_gui.camera.base import (
     CameraBackend,
     CameraConfig,
     CameraError,
-    CropConfig,
     ReadMode,
     ShutterMode,
     TempStatus,
@@ -87,7 +86,7 @@ class AndorIDusBackend(CameraBackend):
         return self._xpix, self._ypix
 
     def frame_width(self) -> int:
-        if self._frame_width > 0:
+        if getattr(self, "_frame_width", 0) > 0:
             return self._frame_width
         xpix, _ = self.detector_size()
         return xpix

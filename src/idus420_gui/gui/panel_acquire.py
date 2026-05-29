@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QSettings, Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -25,8 +28,10 @@ from PyQt6.QtWidgets import (
 
 from idus420_gui.camera.base import CameraBackend
 from idus420_gui.gui import theme
+from idus420_gui.gui._helpers import PanelSettings, stop_worker
 from idus420_gui.gui.panel_demod import DemodPanel
 from idus420_gui.io.save import save_h5, save_npz, save_txt
+from idus420_gui.processing.demodulation import DemodResult
 from idus420_gui.workers.acquisition import AcquisitionWorker, DemodulationSettings
 
 _SETTINGS_KEY_PREFIX = "acquire_panel"
@@ -157,7 +162,7 @@ class AcquisitionPanel(QWidget):
         )
 
         for pi in (self.spectrum_plot, self.history_plot):
-            theme._style_plot_item(pi)  # noqa: SLF001
+            theme.style_plot_item(pi)
 
         self.spectrum_curve = self.spectrum_plot.plot(
             pen=pg.mkPen(theme.CURVE_YELLOW, width=1.5)
@@ -181,8 +186,10 @@ class AcquisitionPanel(QWidget):
         if not self.backend:
             self.log_message.emit("No camera backend is connected.")
             return
-        if not self.demod_source._validate_roi():  # noqa: SLF001 - intentional internal access
+        if not self.demod_source.validate_roi():
             return
+        if self.worker is not None and self.worker.isRunning():
+            stop_worker(self.worker)
         settings: DemodulationSettings = self.demod_source.settings()
         total_frames = self.total_frames.value() if self.use_frames.isChecked() else None
         total_seconds = None if self.use_frames.isChecked() else float(self.duration_s.value())
@@ -200,10 +207,9 @@ class AcquisitionPanel(QWidget):
         self.worker.demod_result.connect(self._handle_demod_result)
         self.worker.run_finished.connect(self._save_run)
         self.worker.error.connect(self.log_message.emit)
-        self.worker.worker_finished.connect(lambda: self._set_running_ui(False))
+        self.worker.worker_finished.connect(self._on_worker_finished)
         self._peak_history: list[float] = []
         self._set_running_ui(True)
-        import time
         self._run_start_time = time.monotonic()
         self.worker.start()
 
@@ -211,7 +217,14 @@ class AcquisitionPanel(QWidget):
         if self.worker:
             self.worker.stop()
 
-    def _save_run(self, frames: object, processed: object) -> None:
+    def _on_worker_finished(self) -> None:
+        # Ignore a late signal from a worker that has already been replaced.
+        if self.sender() is not self.worker:
+            return
+        self.worker = None
+        self._set_running_ui(False)
+
+    def _save_run(self, frames: np.ndarray, processed: dict[str, Any]) -> None:
         now = datetime.now().strftime("%Y%m%d_%H%M%S")
         stem = getattr(self, "_pending_stem", None) or now
         timestamp = getattr(self, "_pending_timestamp", None) or now
@@ -233,19 +246,19 @@ class AcquisitionPanel(QWidget):
             "f_search_halfwidth_hz": settings.f_search_halfwidth,
             "window": settings.window,
         }
-        roi_ts = processed["roi_timeseries"]  # type: ignore[index]
-        results = processed["demod_results"]  # type: ignore[index]
+        roi_ts = processed["roi_timeseries"]
+        results = processed["demod_results"]
         if self.save_npz_cb.isChecked():
             path = out_dir / f"{stem}.npz"
-            save_npz(path, frames, roi_ts, results, metadata)  # type: ignore[arg-type]
+            save_npz(path, frames, roi_ts, results, metadata)
             self.log_message.emit(f"Saved {path}")
         if self.save_h5_cb.isChecked():
             path = out_dir / f"{stem}.h5"
-            save_h5(path, frames, roi_ts, results, metadata)  # type: ignore[arg-type]
+            save_h5(path, frames, roi_ts, results, metadata)
             self.log_message.emit(f"Saved {path}")
         if self.save_txt_cb.isChecked():
             path = out_dir / f"{stem}.txt"
-            save_txt(path, frames, roi_ts, results, metadata)  # type: ignore[arg-type]
+            save_txt(path, frames, roi_ts, results, metadata)
             self.log_message.emit(f"Saved {path}")
         if self.save_sif_cb.isChecked():
             self.log_message.emit(f"Saved {out_dir / f'{stem}.sif'}")
@@ -264,8 +277,8 @@ class AcquisitionPanel(QWidget):
         else:
             self.elapsed_label.setText(f"{acquired} / {total} frames")
 
-    def _handle_demod_result(self, result: object) -> None:
-        self._peak_history.append(float(result.peak_amplitude))  # type: ignore[attr-defined]
+    def _handle_demod_result(self, result: DemodResult) -> None:
+        self._peak_history.append(float(result.peak_amplitude))
         self._peak_history = self._peak_history[-600:]
         self.history_curve.setData(self._peak_history)
 
@@ -301,41 +314,28 @@ class AcquisitionPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _save_settings(self) -> None:
-        s = QSettings("idus420_gui", "AcquirePanel")
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/output_dir", self.output_dir.text())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/stem", self.stem.text())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/duration_s", self.duration_s.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/total_frames", self.total_frames.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/use_frames", self.use_frames.isChecked())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/save_npz", self.save_npz_cb.isChecked())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/save_h5", self.save_h5_cb.isChecked())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/save_txt", self.save_txt_cb.isChecked())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/save_sif", self.save_sif_cb.isChecked())
+        s = PanelSettings("AcquirePanel", _SETTINGS_KEY_PREFIX)
+        s.set("output_dir", self.output_dir.text())
+        s.set("stem", self.stem.text())
+        s.set("duration_s", self.duration_s.value())
+        s.set("total_frames", self.total_frames.value())
+        s.set("use_frames", self.use_frames.isChecked())
+        s.set("save_npz", self.save_npz_cb.isChecked())
+        s.set("save_h5", self.save_h5_cb.isChecked())
+        s.set("save_txt", self.save_txt_cb.isChecked())
+        s.set("save_sif", self.save_sif_cb.isChecked())
 
     def _restore_settings(self) -> None:
-        s = QSettings("idus420_gui", "AcquirePanel")
-
-        def bval(key: str, default: bool) -> bool:
-            v = s.value(f"{_SETTINGS_KEY_PREFIX}/{key}")
-            if v is None:
-                return default
-            if isinstance(v, bool):
-                return v
-            return str(v).lower() in {"true", "1", "yes"}
-
-        if (v := s.value(f"{_SETTINGS_KEY_PREFIX}/output_dir")) is not None:
-            self.output_dir.setText(str(v))
-        if (v := s.value(f"{_SETTINGS_KEY_PREFIX}/stem")) is not None:
-            self.stem.setText(str(v))
-        if (v := s.value(f"{_SETTINGS_KEY_PREFIX}/duration_s")) is not None:
-            self.duration_s.setValue(int(v))
-        if (v := s.value(f"{_SETTINGS_KEY_PREFIX}/total_frames")) is not None:
-            self.total_frames.setValue(int(v))
-        self.use_frames.setChecked(bval("use_frames", False))
-        self.save_npz_cb.setChecked(bval("save_npz", True))
-        self.save_h5_cb.setChecked(bval("save_h5", False))
-        self.save_txt_cb.setChecked(bval("save_txt", False))
-        self.save_sif_cb.setChecked(bval("save_sif", False))
+        s = PanelSettings("AcquirePanel", _SETTINGS_KEY_PREFIX)
+        self.output_dir.setText(s.get_str("output_dir", self.output_dir.text()))
+        self.stem.setText(s.get_str("stem", self.stem.text()))
+        self.duration_s.setValue(s.get_int("duration_s", self.duration_s.value()))
+        self.total_frames.setValue(s.get_int("total_frames", self.total_frames.value()))
+        self.use_frames.setChecked(s.get_bool("use_frames", False))
+        self.save_npz_cb.setChecked(s.get_bool("save_npz", True))
+        self.save_h5_cb.setChecked(s.get_bool("save_h5", False))
+        self.save_txt_cb.setChecked(s.get_bool("save_txt", False))
+        self.save_sif_cb.setChecked(s.get_bool("save_sif", False))
 
 
 def _lbl(text: str) -> QLabel:

@@ -12,7 +12,6 @@ from idus420_gui.camera.base import (
     CameraBackend,
     CameraConfig,
     CameraError,
-    CropConfig,
     ReadMode,
     TempStatus,
     TriggerMode,
@@ -140,7 +139,11 @@ class MockBackend(CameraBackend):
                 raise CameraError("Crop vbin must be >= 1.")
             self._validate_horizontal_bin(hbin, crop.crop_width)
         else:
-            hbin = cfg.single_track.horizontal_bin if cfg.read_mode is ReadMode.SINGLE_TRACK else cfg.fvb_horizontal_bin
+            hbin = (
+                cfg.single_track.horizontal_bin
+                if cfg.read_mode is ReadMode.SINGLE_TRACK
+                else cfg.fvb_horizontal_bin
+            )
             self._validate_horizontal_bin(hbin, xpix)
         if cfg.read_mode is ReadMode.SINGLE_TRACK:
             st = cfg.single_track
@@ -200,11 +203,11 @@ class MockBackend(CameraBackend):
         self._require_connected()
         if self._n_kinetics <= 0:
             raise CameraError("setup_kinetic must be called before start.")
+        # Frames are generated lazily on read so that a large kinetic series
+        # does not allocate the entire run up front.
         self._status = AcquisitionStatus.ACQUIRING
         self._run_frames = []
         self._read_index = 0
-        for _ in range(self._n_kinetics):
-            self._run_frames.append(self._make_frame())
         self._status = AcquisitionStatus.IDLE
 
     def abort(self) -> None:
@@ -215,32 +218,41 @@ class MockBackend(CameraBackend):
 
     def wait_next_frame(self, timeout_ms: int) -> bool:
         self._require_connected()
-        return self._read_index < len(self._run_frames)
+        return self._read_index < self._n_kinetics
+
+    def _generate_through(self, count: int) -> None:
+        """Ensure synthetic frames exist for indices ``0 .. count - 1``."""
+        while len(self._run_frames) < count:
+            self._run_frames.append(self._make_frame())
 
     def get_oldest_frame(self) -> np.ndarray:
         self._require_connected()
-        if self._read_index >= len(self._run_frames):
+        if self._read_index >= self._n_kinetics:
             raise CameraError("No unread mock frames are available.")
+        self._generate_through(self._read_index + 1)
         frame = self._run_frames[self._read_index]
         self._read_index += 1
         return frame.copy()
 
     def get_new_frames_batch(self) -> np.ndarray | None:
         self._require_connected()
-        if self._read_index >= len(self._run_frames):
+        if self._read_index >= self._n_kinetics:
             return None
+        self._generate_through(self._n_kinetics)
         frames = np.stack(self._run_frames[self._read_index:], axis=0)
-        self._read_index = len(self._run_frames)
+        self._read_index = self._n_kinetics
         return frames.copy()
 
     def get_all_frames(self, n: int) -> np.ndarray:
         self._require_connected()
         if n < 0:
             raise CameraError("Requested frame count cannot be negative.")
-        frames = self._run_frames[:n]
-        if len(frames) < n:
-            raise CameraError(f"Only {len(frames)} frames are available, requested {n}.")
-        return np.stack(frames, axis=0).copy()
+        if n > self._n_kinetics:
+            raise CameraError(
+                f"Only {self._n_kinetics} frames are available, requested {n}."
+            )
+        self._generate_through(n)
+        return np.stack(self._run_frames[:n], axis=0).copy()
 
     def query_timings(self) -> AcquisitionTimings:
         self._require_connected()

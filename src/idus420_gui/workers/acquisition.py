@@ -64,7 +64,6 @@ class DemodulationWorker(QThread):
 
     def run(self) -> None:
         try:
-            frame_width = self.backend.frame_width()
             timeout_ms = self.settings.frame_timeout_ms()
             while self._running:
                 self.backend.setup_kinetic(
@@ -73,8 +72,9 @@ class DemodulationWorker(QThread):
                     TriggerMode.EXTERNAL,
                 )
                 self.backend.start()
-                frames = np.empty((self.settings.n_block, frame_width), dtype=np.uint16)
-                acquired = 0
+                # Accumulate only the frames actually acquired instead of
+                # preallocating the full block, which can be very large.
+                block_frames: list[np.ndarray] = []
                 for idx in range(self.settings.n_block):
                     if not self._running:
                         break
@@ -86,12 +86,12 @@ class DemodulationWorker(QThread):
                         self._running = False
                         break
                     frame = self.backend.get_oldest_frame()
-                    frames[idx] = frame
-                    acquired += 1
+                    block_frames.append(frame)
                     if idx == 0 or idx == self.settings.n_block - 1:
                         self.frame_acquired.emit(frame.copy())
+                acquired = len(block_frames)
                 if acquired:
-                    block = frames[:acquired]
+                    block = np.stack(block_frames, axis=0)
                     roi_ts = integrate_roi(
                         block,
                         self.settings.pixel_start,
@@ -155,6 +155,7 @@ class AcquisitionWorker(QThread):
     def run(self) -> None:
         all_frames: list[np.ndarray] = []
         demod_results: list[DemodResult] = []
+        roi_all: list[float] = []      # full ROI time series (one value per frame)
         roi_buffer: list[float] = []   # running ROI accumulator for real-time blocking
         try:
             timeout_ms = self.settings.frame_timeout_ms()
@@ -187,6 +188,7 @@ class AcquisitionWorker(QThread):
                         self.settings.roi_method,
                     )[0]
                 )
+                roi_all.append(roi_val)
                 roi_buffer.append(roi_val)
 
                 if len(roi_buffer) == self.settings.n_block:
@@ -211,20 +213,9 @@ class AcquisitionWorker(QThread):
                 if all_frames
                 else np.empty((0, self.backend.frame_width()), dtype=np.uint16)
             )
-            roi_ts = np.asarray(
-                [
-                    float(
-                        integrate_roi(
-                            f.reshape(1, -1),
-                            self.settings.pixel_start,
-                            self.settings.pixel_end,
-                            self.settings.roi_method,
-                        )[0]
-                    )
-                    for f in all_frames
-                ],
-                dtype=np.float64,
-            ) if all_frames else np.empty(0, dtype=np.float64)
+            # Reuse the ROI values already computed per frame in the loop above
+            # rather than re-integrating every frame a second time.
+            roi_ts = np.asarray(roi_all, dtype=np.float64)
 
             self.run_finished.emit(
                 frames,
