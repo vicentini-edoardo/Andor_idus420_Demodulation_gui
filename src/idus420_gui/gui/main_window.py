@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QLabel, QMainWindow, QMessageBox, QTabWidget
+import subprocess
+import sys
+from pathlib import Path
+
+from PyQt6.QtCore import QTimer, QThread, pyqtSignal
+from PyQt6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QTabWidget,
+)
 
 from idus420_gui.camera.base import AcquisitionStatus, CameraBackend, TempStatus
 from idus420_gui.gui.panel_acquire import AcquisitionPanel
@@ -12,6 +23,25 @@ from idus420_gui.gui.panel_demod import DemodPanel
 from idus420_gui.gui.panel_live import LiveSpectrumPanel
 from idus420_gui.gui.panel_scan import ScanPanel
 from idus420_gui.gui.widgets import LogView
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+class _GitPullWorker(QThread):
+    finished = pyqtSignal(int, str)  # returncode, combined output
+
+    def run(self) -> None:
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(_REPO_ROOT), "pull"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.finished.emit(r.returncode, r.stdout + r.stderr)
+        except Exception as exc:
+            self.finished.emit(-1, str(exc))
 
 
 class MainWindow(QMainWindow):
@@ -45,7 +75,12 @@ class MainWindow(QMainWindow):
         self.acquisition_label.setObjectName("acquisition_label")
         self.acquisition_label.setProperty("running", "false")
         self.log_view = LogView()
+        self._update_btn = QPushButton("Update")
+        self._update_btn.setToolTip("git pull and restart")
+        self._update_btn.clicked.connect(self._update_app)
+        self._pull_worker: _GitPullWorker | None = None
         self.statusBar().addWidget(self.connection_label)
+        self.statusBar().addPermanentWidget(self._update_btn)
         self.statusBar().addPermanentWidget(self.temperature_label)
         self.statusBar().addPermanentWidget(self.acquisition_label)
         self.log_view.setWindowTitle("Log")
@@ -145,6 +180,38 @@ class MainWindow(QMainWindow):
         self.tabs.setTabEnabled(2, enabled or self.acquisition_running)
         self.tabs.setTabEnabled(3, enabled or self.acquisition_running)
         self.tabs.setTabEnabled(4, enabled or self.acquisition_running)
+
+    def _update_app(self) -> None:
+        self._update_btn.setEnabled(False)
+        self._update_btn.setText("Updating…")
+        self._pull_worker = _GitPullWorker()
+        self._pull_worker.finished.connect(self._on_pull_done)
+        self._pull_worker.start()
+
+    def _on_pull_done(self, returncode: int, output: str) -> None:
+        self._update_btn.setEnabled(True)
+        self._update_btn.setText("Update")
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Update")
+        msg.setText(output.strip() or "(no output)")
+        if returncode == 0:
+            msg.setInformativeText("Restart now to apply changes?")
+            msg.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if msg.exec() == QMessageBox.StandardButton.Yes:
+                self._restart()
+        else:
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+
+    def _restart(self) -> None:
+        subprocess.Popen([sys.executable, "-m", "idus420_gui"])
+        self.close()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     def closeEvent(self, event: object) -> None:
         if self.live_panel.worker:

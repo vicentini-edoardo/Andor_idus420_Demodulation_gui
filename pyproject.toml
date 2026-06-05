@@ -36,6 +36,9 @@ snom = [
 [project.scripts]
 idus420-gui = "idus420_gui.__main__:main"
 
+[project.gui_scripts]
+idus420-gui-w = "idus420_gui.__main__:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
