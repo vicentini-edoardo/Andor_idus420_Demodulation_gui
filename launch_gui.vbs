@@ -1,4 +1,6 @@
-' Conda environment name — edit if you use a different env.
+' DEBUG version — uses python.exe with a visible console so errors are readable.
+' Replace pythonw with pythonw and set window style back to 0 once working.
+
 Dim CONDA_ENV
 CONDA_ENV = "py38"
 
@@ -8,18 +10,8 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 
 repoDir = fso.GetParentFolderName(WScript.ScriptFullName)
 srcDir  = repoDir & "\src"
-python  = sh.ExpandEnvironmentStrings("%USERPROFILE%") & "\.conda\envs\" & CONDA_ENV & "\pythonw.exe"
-
-' --- diagnostics: show resolved paths and bail if something is missing ---
-If Not fso.FileExists(python) Then
-    MsgBox "pythonw.exe not found:" & vbCrLf & python, 16, "launch_gui error"
-    WScript.Quit 1
-End If
-
-If Not fso.FolderExists(srcDir) Then
-    MsgBox "src folder not found:" & vbCrLf & srcDir, 16, "launch_gui error"
-    WScript.Quit 1
-End If
+python  = sh.ExpandEnvironmentStrings("%USERPROFILE%") & "\.conda\envs\" & CONDA_ENV & "\python.exe"
 
 sh.CurrentDirectory = srcDir
-sh.Run """" & python & """ -m idus420_gui", 0, False
+' window style 1 = normal visible, True = wait for exit
+sh.Run """" & python & """ -m idus420_gui", 1, True
