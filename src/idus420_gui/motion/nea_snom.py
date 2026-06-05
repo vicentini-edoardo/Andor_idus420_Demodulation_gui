@@ -24,6 +24,7 @@ from idus420_gui.motion.base import SnomSample, StageBackend, StageError
 _N_HARMONICS = 6
 _DEFAULT_SPEED_UM_S = 0.2
 _MOVE_POLL_S = 0.1
+_MOVE_TIMEOUT_S = 300.0
 
 
 class NeaSnomBackend(StageBackend):
@@ -85,7 +86,11 @@ class NeaSnomBackend(StageBackend):
     # ------------------------------------------------------------------
 
     def goto_xy_nm(
-        self, x_nm: float, y_nm: float, speed_um_s: float = _DEFAULT_SPEED_UM_S
+        self,
+        x_nm: float,
+        y_nm: float,
+        speed_um_s: float = _DEFAULT_SPEED_UM_S,
+        timeout_s: float = _MOVE_TIMEOUT_S,
     ) -> None:
         """Move tip to (x_nm, y_nm) and block until the move completes."""
         self._require_connected()
@@ -95,29 +100,33 @@ class NeaSnomBackend(StageBackend):
         x_um = x_nm / 1000.0
         y_um = y_nm / 1000.0
 
-        do_wait = [False]
+        # Start True so that if Moved fires before the polling loop starts we
+        # don't stall.  Only the Moved callback clears the flag; removing the
+        # Moving callback eliminates the race where Moved fires before Moving.
+        do_wait = [True]
 
         def on_tip_position_moved(sender, args):  # noqa: ANN001
             do_wait[0] = False
 
-        def on_tip_position_moving(sender, args):  # noqa: ANN001
-            do_wait[0] = True
-
         ctx.Logic.TipPositionMoved += on_tip_position_moved
-        ctx.Logic.TipPositionMoving += on_tip_position_moving
         try:
             move_args = nea.MoveTipPositionArgs(
                 nea.Geometry.Point2D(x_um, y_um),
                 speed_um_s / 1000.0,
             )
             ctx.Logic.MoveTipPosition.Execute(move_args)
+            deadline = time.monotonic() + timeout_s
             sleep(_MOVE_POLL_S)
             while do_wait[0]:
+                if time.monotonic() >= deadline:
+                    raise StageError(
+                        f"goto_xy_nm timed out after {timeout_s:.0f} s"
+                        f" (target: x={x_nm:.0f} nm, y={y_nm:.0f} nm)"
+                    )
                 sleep(_MOVE_POLL_S)
             sleep(0.2)
         finally:
             ctx.Logic.TipPositionMoved -= on_tip_position_moved
-            ctx.Logic.TipPositionMoving -= on_tip_position_moving
 
     def read_xyz_nm(self) -> tuple[float, float, float]:
         self._require_connected()
@@ -165,9 +174,8 @@ class NeaSnomBackend(StageBackend):
                     for k in keys:
                         try:
                             temp = float(s.data[k][-1])
-                            if np.abs(temp) > 1e-6:
-                                win_sum[k] += temp
-                                win_cnt[k] += 1
+                            win_sum[k] += temp
+                            win_cnt[k] += 1
                         except Exception:  # noqa: BLE001
                             pass
                     time.sleep(0.02)
@@ -197,14 +205,16 @@ class NeaSnomBackend(StageBackend):
     def stream_continuous(
         self,
         stop_event: threading.Event,
-        frame_event: threading.Event,
+        frame_event: threading.Semaphore,
         out_queue: queue.Queue,
         t0_scan: float,
     ) -> None:
         """Run in a background thread: one Stream for the whole point acquisition.
 
-        Polls every 20 ms. Each time frame_event is set (one camera frame arrived),
-        flush accumulated SNOM polls into a SnomSample and put it in out_queue.
+        Polls every 20 ms. Each time frame_event is released (one camera frame
+        arrived), flush accumulated SNOM polls into a SnomSample and put it in
+        out_queue.  Using a Semaphore instead of an Event counts each frame
+        individually so rapid back-to-back frames are not collapsed into one.
         Stops when stop_event is set.
         """
 
@@ -242,16 +252,14 @@ class NeaSnomBackend(StageBackend):
                 for k in keys:
                     try:
                         temp = float(s.data[k][-1])
-                        if np.abs(temp) > 1e-6:
-                            win_sum[k] += temp
-                            win_cnt[k] += 1
+                        win_sum[k] += temp
+                        win_cnt[k] += 1
                     except Exception:  # noqa: BLE001
                         pass
                 time.sleep(0.02)
 
-                # Frame boundary: flush current window into a SnomSample
-                if frame_event.is_set():
-                    frame_event.clear()
+                # Drain all frame notifications that arrived during this poll tick.
+                while frame_event.acquire(blocking=False):
                     t_s = time.monotonic() - t0_scan
                     out_queue.put(_flush(win_sum, win_cnt, t_s))
                     win_sum = {k: 0.0 for k in keys}

@@ -67,17 +67,23 @@ def save_h5(
     demod_results: list[DemodResult],
     metadata: dict[str, Any],
 ) -> None:
-    """Save run products in HDF5 format."""
+    """Save run products in HDF5 format (atomic: writes to .tmp then renames)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.parent / (path.name + ".tmp")
     frames_u16 = np.asarray(frames, dtype=np.uint16)
     meta = dict(metadata)
     meta["frames_sha256"] = _frames_sha256(frames_u16)
-    with h5py.File(path, "w") as h5:
-        h5.create_dataset("frames", data=frames_u16, compression="gzip")
-        h5.create_dataset("roi_timeseries", data=np.asarray(roi_timeseries, dtype=np.float64))
-        h5.create_dataset("demod_results", data=_demod_structured(demod_results))
-        h5.attrs["metadata"] = json.dumps(meta, default=str)
+    try:
+        with h5py.File(tmp_path, "w") as h5:
+            h5.create_dataset("frames", data=frames_u16, compression="gzip")
+            h5.create_dataset("roi_timeseries", data=np.asarray(roi_timeseries, dtype=np.float64))
+            h5.create_dataset("demod_results", data=_demod_structured(demod_results))
+            h5.attrs["metadata"] = json.dumps(meta, default=str)
+        tmp_path.replace(path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def save_txt(
@@ -177,52 +183,57 @@ def save_scan_h5(
         "order": grid.order,
     }
 
-    with h5py.File(path, "w") as h5:
-        h5.attrs["metadata"] = json.dumps(meta, default=str)
+    tmp_path = path.parent / (path.name + ".tmp")
+    try:
+        with h5py.File(tmp_path, "w") as h5:
+            h5.attrs["metadata"] = json.dumps(meta, default=str)
 
-        sg = h5.create_group("scan")
-        sg.create_dataset("coords_xy_nm", data=coords_xy)
-        sg.create_dataset("coords_xyz_nm", data=coords_xyz)
-        sg.create_dataset("point_index_grid", data=index_grid)
+            sg = h5.create_group("scan")
+            sg.create_dataset("coords_xy_nm", data=coords_xy)
+            sg.create_dataset("coords_xyz_nm", data=coords_xyz)
+            sg.create_dataset("point_index_grid", data=index_grid)
 
-        pg = h5.create_group("points")
-        for scan_idx, pr in enumerate(scan.point_results):
-            grp = pg.create_group(f"point_{scan_idx:06d}")
-            grp.attrs["ix"] = pr.point.ix
-            grp.attrs["iy"] = pr.point.iy
-            grp.attrs["x_nm"] = pr.point.x_nm
-            grp.attrs["y_nm"] = pr.point.y_nm
-            grp.attrs["actual_x_nm"] = pr.actual_xyz_nm[0]
-            grp.attrs["actual_y_nm"] = pr.actual_xyz_nm[1]
-            grp.attrs["actual_z_nm"] = pr.actual_xyz_nm[2]
+            pg = h5.create_group("points")
+            for scan_idx, pr in enumerate(scan.point_results):
+                grp = pg.create_group(f"point_{scan_idx:06d}")
+                grp.attrs["ix"] = pr.point.ix
+                grp.attrs["iy"] = pr.point.iy
+                grp.attrs["x_nm"] = pr.point.x_nm
+                grp.attrs["y_nm"] = pr.point.y_nm
+                grp.attrs["actual_x_nm"] = pr.actual_xyz_nm[0]
+                grp.attrs["actual_y_nm"] = pr.actual_xyz_nm[1]
+                grp.attrs["actual_z_nm"] = pr.actual_xyz_nm[2]
 
-            frames_u16 = np.asarray(pr.frames, dtype=np.uint16)
-            grp.create_dataset("frames", data=frames_u16, compression="gzip")
-            grp.attrs["frames_sha256"] = _frames_sha256(frames_u16)
-            grp.create_dataset(
-                "roi_timeseries",
-                data=np.asarray(pr.roi_timeseries, dtype=np.float64),
-            )
-            grp.create_dataset("demod", data=_demod_structured(pr.demod_results))
+                frames_u16 = np.asarray(pr.frames, dtype=np.uint16)
+                grp.create_dataset("frames", data=frames_u16, compression="gzip")
+                grp.attrs["frames_sha256"] = _frames_sha256(frames_u16)
+                grp.create_dataset(
+                    "roi_timeseries",
+                    data=np.asarray(pr.roi_timeseries, dtype=np.float64),
+                )
+                grp.create_dataset("demod", data=_demod_structured(pr.demod_results))
 
-            if pr.snom_samples:
-                n_s = len(pr.snom_samples)
-                t_arr = np.array([s.t_s for s in pr.snom_samples], dtype=np.float64)
-                xyz_arr = np.array([list(s.xyz_nm) for s in pr.snom_samples], dtype=np.float64)
-                o_amp_arr = np.stack([s.o_amp for s in pr.snom_samples], axis=0)
-                o_ph_arr = np.stack([s.o_phase for s in pr.snom_samples], axis=0)
-                m_amp_arr = np.stack([s.m_amp for s in pr.snom_samples], axis=0)
-                m_ph_arr = np.stack([s.m_phase for s in pr.snom_samples], axis=0)
-                grp.create_dataset("snom_t_s", data=t_arr)
-                grp.create_dataset("snom_xyz_nm", data=xyz_arr)
-                grp.create_dataset("snom_o_amp", data=o_amp_arr)
-                grp.create_dataset("snom_o_phase", data=o_ph_arr)
-                grp.create_dataset("snom_m_amp", data=m_amp_arr)
-                grp.create_dataset("snom_m_phase", data=m_ph_arr)
-            else:
-                for dname in ("snom_t_s", "snom_xyz_nm", "snom_o_amp", "snom_o_phase",
-                               "snom_m_amp", "snom_m_phase"):
-                    grp.create_dataset(dname, data=np.array([]))
+                if pr.snom_samples:
+                    t_arr = np.array([s.t_s for s in pr.snom_samples], dtype=np.float64)
+                    xyz_arr = np.array([list(s.xyz_nm) for s in pr.snom_samples], dtype=np.float64)
+                    o_amp_arr = np.stack([s.o_amp for s in pr.snom_samples], axis=0)
+                    o_ph_arr = np.stack([s.o_phase for s in pr.snom_samples], axis=0)
+                    m_amp_arr = np.stack([s.m_amp for s in pr.snom_samples], axis=0)
+                    m_ph_arr = np.stack([s.m_phase for s in pr.snom_samples], axis=0)
+                    grp.create_dataset("snom_t_s", data=t_arr)
+                    grp.create_dataset("snom_xyz_nm", data=xyz_arr)
+                    grp.create_dataset("snom_o_amp", data=o_amp_arr)
+                    grp.create_dataset("snom_o_phase", data=o_ph_arr)
+                    grp.create_dataset("snom_m_amp", data=m_amp_arr)
+                    grp.create_dataset("snom_m_phase", data=m_ph_arr)
+                else:
+                    for dname in ("snom_t_s", "snom_xyz_nm", "snom_o_amp", "snom_o_phase",
+                                   "snom_m_amp", "snom_m_phase"):
+                        grp.create_dataset(dname, data=np.array([]))
+        tmp_path.replace(path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _demod_structured(results: list[DemodResult]) -> np.ndarray:

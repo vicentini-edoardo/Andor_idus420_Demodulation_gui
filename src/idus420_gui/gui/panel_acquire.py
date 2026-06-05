@@ -181,7 +181,7 @@ class AcquisitionPanel(QWidget):
         if not self.backend:
             self.log_message.emit("No camera backend is connected.")
             return
-        if not self.demod_source._validate_roi():  # noqa: SLF001 - intentional internal access
+        if not self.demod_source.validate_roi():
             return
         settings: DemodulationSettings = self.demod_source.settings()
         total_frames = self.total_frames.value() if self.use_frames.isChecked() else None

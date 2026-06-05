@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -15,15 +16,17 @@ from idus420_gui.camera.base import CameraBackend, TriggerMode
 from idus420_gui.motion.base import ScanGrid, SnomSample, StageBackend, StagePoint
 from idus420_gui.processing.demodulation import DemodResult, demodulate
 from idus420_gui.processing.roi import integrate_roi
-from idus420_gui.workers.acquisition import (
+from idus420_gui.workers._frame_io import (
     _MAX_REARM_ATTEMPTS,
-    DemodulationSettings,
     _read_pending_frames,
     _read_ready_frames,
     _rearm_acquisition,
     _rearm_message,
     _timeout_failure_message,
 )
+from idus420_gui.workers.acquisition import DemodulationSettings
+
+LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -122,7 +125,7 @@ class ScanWorker(QThread):
 
                 # Start concurrent SNOM streaming if supported
                 snom_stop = threading.Event()
-                snom_frame = threading.Event()
+                snom_frame = threading.Semaphore(0)
                 snom_queue: queue.Queue[SnomSample] = queue.Queue()
                 use_stream = hasattr(self.stage, "stream_continuous")
                 if use_stream:
@@ -194,7 +197,7 @@ class ScanWorker(QThread):
 
                         # Signal SNOM thread to flush one sample for this frame.
                         if use_stream:
-                            snom_frame.set()
+                            snom_frame.release()
 
                 # Stop SNOM thread and collect samples
                 if use_stream:
@@ -296,6 +299,7 @@ class ScanWorker(QThread):
                 self.point_finished.emit(point_index, total)
 
         except Exception as exc:  # noqa: BLE001
+            LOG.exception("ScanWorker error")
             self.error.emit(str(exc))
         finally:
             self.camera.abort()

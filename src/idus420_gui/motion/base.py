@@ -41,6 +41,10 @@ class ScanGrid:
 
     def points(self) -> Iterator[StagePoint]:
         """Yield StagePoints in the configured scan order."""
+        if self.nx < 1 or self.ny < 1:
+            raise ValueError(
+                f"ScanGrid dimensions must be ≥ 1 (got nx={self.nx}, ny={self.ny})"
+            )
         cos_a = np.cos(np.radians(self.angle_deg))
         sin_a = np.sin(np.radians(self.angle_deg))
         # Rotate about the scan center, not the corner, so the user-specified

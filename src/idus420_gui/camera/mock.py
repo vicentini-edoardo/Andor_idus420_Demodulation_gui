@@ -167,6 +167,7 @@ class MockBackend(CameraBackend):
         n_accumulations: int = 1,
     ) -> AcquisitionTimings:
         self._require_connected()
+        self.abort()
         if exposure_s <= 0:
             raise CameraError("Exposure must be positive.")
         if n_kinetics <= 0:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from dataclasses import dataclass
@@ -13,93 +14,19 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from idus420_gui.camera.base import CameraBackend, TriggerMode
 from idus420_gui.processing.demodulation import DemodResult, demodulate
 from idus420_gui.processing.roi import integrate_roi
+from idus420_gui.workers._frame_io import (
+    _MAX_REARM_ATTEMPTS,
+    _read_pending_frames,
+    _read_ready_frames,
+    _rearm_acquisition,
+    _rearm_message,
+    _timeout_failure_message,
+)
 
+LOG = logging.getLogger(__name__)
 
 _LIVE_ACQUISITION_FRAMES = 4_096
 _GUI_UPDATE_INTERVAL_S = 0.05
-_MAX_REARM_ATTEMPTS = 3
-
-
-def _read_ready_frames(backend: CameraBackend, max_frames: int | None = None) -> np.ndarray:
-    """Return all SDK-reported ready frames, falling back to one-frame reads.
-
-    The workers call this only after wait_next_frame() reports a completed frame,
-    so an empty batch means the wrapper cannot expose batch reads reliably.
-    """
-    frame_width = backend.frame_width()
-    try:
-        batch = backend.get_new_frames_batch()
-    except (AttributeError, NotImplementedError, TypeError):
-        batch = None
-    if batch is None:
-        frame = backend.get_oldest_frame()
-        return frame.reshape(1, frame_width).copy()
-
-    frames = np.asarray(batch, dtype=np.uint16)
-    if frames.size == 0:
-        frame = backend.get_oldest_frame()
-        return frame.reshape(1, frame_width).copy()
-    frames = frames.reshape(-1, frame_width)
-    if max_frames is not None:
-        frames = frames[:max(0, int(max_frames))]
-    return frames.copy()
-
-
-def _read_pending_frames(backend: CameraBackend, max_frames: int | None = None) -> np.ndarray | None:
-    """Drain SDK-reported frames after a wait timeout, without unsafe fallback reads."""
-    try:
-        batch = backend.get_new_frames_batch()
-    except Exception:  # noqa: BLE001 - timeout recovery must fall back to re-arm.
-        return None
-    if batch is None:
-        return None
-    frame_width = backend.frame_width()
-    frames = np.asarray(batch, dtype=np.uint16)
-    if frames.size == 0:
-        return None
-    frames = frames.reshape(-1, frame_width)
-    if max_frames is not None:
-        frames = frames[:max(0, int(max_frames))]
-    if frames.size == 0:
-        return None
-    return frames.copy()
-
-
-def _timeout_error(timeout_ms: int) -> str:
-    return (
-        f"No completed camera frames after {timeout_ms / 1000:.1f} s"
-        " (×3). Trigger may be present; camera/SDK did not deliver frames."
-    )
-
-
-def _rearm_message(
-    timeout_ms: int,
-    attempt: int,
-    max_attempts: int,
-    diagnostics: str,
-) -> str:
-    return (
-        f"No completed camera frames after {timeout_ms / 1000:.1f} s"
-        f" (×3). Re-arming camera acquisition ({attempt}/{max_attempts}). "
-        f"Diagnostics: {diagnostics}"
-    )
-
-
-def _timeout_failure_message(timeout_ms: int, diagnostics: str) -> str:
-    return f"{_timeout_error(timeout_ms)} Diagnostics: {diagnostics}"
-
-
-def _rearm_acquisition(
-    backend: CameraBackend,
-    exposure_s: float,
-    remaining_frames: int,
-) -> None:
-    backend.setup_kinetic(
-        exposure_s,
-        max(1, int(remaining_frames)),
-        TriggerMode.EXTERNAL,
-    )
-    backend.start()
 
 
 @dataclass(frozen=True)
@@ -250,6 +177,7 @@ class DemodulationWorker(QThread):
                 if not self.continuous:
                     break
         except Exception as exc:  # noqa: BLE001 - worker must report and exit cleanly.
+            LOG.exception("DemodulationWorker error")
             self.error.emit(str(exc))
         finally:
             self.backend.abort()
@@ -295,7 +223,8 @@ class AcquisitionWorker(QThread):
         self.setPriority(self.Priority.HighPriority)
         all_frames: list[np.ndarray] = []
         demod_results: list[DemodResult] = []
-        roi_buffer: list[float] = []   # running ROI accumulator for real-time blocking
+        roi_buffer: list[float] = []   # running accumulator for per-block demodulation
+        roi_all: list[float] = []      # all ROI values in acquisition order
         try:
             timeout_ms = self.settings.frame_timeout_ms()
             self.backend.setup_kinetic(
@@ -365,6 +294,7 @@ class AcquisitionWorker(QThread):
                         )[0]
                     )
                     roi_buffer.append(roi_val)
+                    roi_all.append(roi_val)
 
                     if len(roi_buffer) == self.settings.n_block:
                         chunk = np.asarray(roi_buffer, dtype=np.float64)
@@ -388,20 +318,7 @@ class AcquisitionWorker(QThread):
                 if all_frames
                 else np.empty((0, self.backend.frame_width()), dtype=np.uint16)
             )
-            roi_ts = np.asarray(
-                [
-                    float(
-                        integrate_roi(
-                            f.reshape(1, -1),
-                            self.settings.pixel_start,
-                            self.settings.pixel_end,
-                            self.settings.roi_method,
-                        )[0]
-                    )
-                    for f in all_frames
-                ],
-                dtype=np.float64,
-            ) if all_frames else np.empty(0, dtype=np.float64)
+            roi_ts = np.asarray(roi_all, dtype=np.float64)
 
             self.run_finished.emit(
                 frames,
@@ -413,6 +330,7 @@ class AcquisitionWorker(QThread):
             if self.sif_path:
                 self.backend.save_as_sif(self.sif_path)
         except Exception as exc:  # noqa: BLE001
+            LOG.exception("AcquisitionWorker error")
             self.error.emit(str(exc))
         finally:
             self.backend.abort()
@@ -538,6 +456,7 @@ class LiveSpectrumWorker(QThread):
                         self.roi_sample.emit(elapsed_s, roi_sum)
                         sample_index += 1
         except Exception as exc:  # noqa: BLE001 - worker must report and exit cleanly.
+            LOG.exception("LiveSpectrumWorker error")
             self.error.emit(str(exc))
         finally:
             self.backend.abort()

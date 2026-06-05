@@ -372,7 +372,8 @@ class AndorIDusBackend(CameraBackend):
         )
         self._check(ret, "GetImages16")
         valid_n = int(valid_last - valid_first + 1)
-        return buf.reshape(n, frame_width)[:valid_n].copy()
+        offset = int(valid_first - first)
+        return buf.reshape(n, frame_width)[offset:offset + valid_n].copy()
 
     def get_all_frames(self, n: int) -> np.ndarray:
         frame_width = self.frame_width()

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import math
+import queue
+import threading
+import time
 
 import numpy as np
 
@@ -68,6 +71,20 @@ class MockStageBackend(StageBackend):
             m_amp=m_amp,
             m_phase=m_phase,
         )
+
+    def stream_continuous(
+        self,
+        stop_event: threading.Event,
+        frame_event: threading.Semaphore,
+        out_queue: queue.Queue,
+        t0_scan: float,
+    ) -> None:
+        """Synthetic streaming: emit one SnomSample per camera frame notification."""
+        while not stop_event.is_set():
+            time.sleep(0.02)
+            while frame_event.acquire(blocking=False):
+                t_s = time.monotonic() - t0_scan
+                out_queue.put(self.read_sample(t_s))
 
     def _require_connected(self) -> None:
         if not self._connected:

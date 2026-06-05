@@ -245,7 +245,7 @@ class DemodPanel(QWidget):
         if not self.backend:
             self.log_message.emit("No camera backend is connected.")
             return
-        if not self._validate_roi():
+        if not self.validate_roi():
             return
         self._set_running_ui(True)
         self.peak_history.clear()
@@ -276,7 +276,7 @@ class DemodPanel(QWidget):
             window=self.window_combo.currentText(),  # type: ignore[arg-type]
         )
 
-    def _validate_roi(self) -> bool:
+    def validate_roi(self) -> bool:
         start = self.roi_start.value()
         end = self.roi_end.value()
         if start > end:

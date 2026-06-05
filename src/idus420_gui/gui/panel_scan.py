@@ -244,7 +244,10 @@ class ScanPanel(QWidget):
         out_g.setSpacing(6)
         out_g.setColumnStretch(1, 1)
 
-        self.output_dir = QLineEdit(str(Path.cwd()))
+        _default_dir = Path.home() / "Documents"
+        if not _default_dir.is_dir():
+            _default_dir = Path.home()
+        self.output_dir = QLineEdit(str(_default_dir))
         choose_btn = QPushButton("Browse")
         choose_btn.setFixedWidth(70)
         dir_row = QHBoxLayout()
@@ -448,7 +451,7 @@ class ScanPanel(QWidget):
                 "No camera backend connected — cannot start scan."
             )
             return
-        if not self.demod_source._validate_roi():  # noqa: SLF001
+        if not self.demod_source.validate_roi():
             return
         self._clear_error()
 
@@ -494,8 +497,9 @@ class ScanPanel(QWidget):
         metadata["snom_host"] = self.snom_host.text()
 
         # Reuse the stage backend across scans — disconnect/reconnect between
-        # scans corrupts the neaspec session state.
-        if self._stage is None:
+        # scans corrupts the neaspec session state.  Create a new instance if
+        # the existing one has gone offline since the last scan.
+        if self._stage is None or not self._stage.is_connected():
             self._stage = NeaSnomBackend()
         stage = self._stage
 
@@ -532,6 +536,9 @@ class ScanPanel(QWidget):
             self.worker.stop()
 
     def closeEvent(self, event: object) -> None:
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.stop()
+            self.worker.wait(3000)
         if self._stage is not None:
             try:
                 self._stage.disconnect()
