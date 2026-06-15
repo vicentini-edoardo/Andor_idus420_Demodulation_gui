@@ -157,6 +157,14 @@ class DemodPanel(QWidget):
         self.n_block.setRange(4, 1_000_000)
         self.n_block.setValue(512)
 
+        self.refresh_spin = QSpinBox()
+        self.refresh_spin.setRange(1, 1_000_000)
+        self.refresh_spin.setValue(64)
+        self.refresh_spin.setToolTip(
+            "New frames between rolling-window updates. Smaller = smoother, "
+            "more frequent demodulation; larger = lighter load."
+        )
+
         self.expected = QDoubleSpinBox()
         self.expected.setRange(0, 1_000_000)
         self.expected.setValue(37.0)
@@ -196,6 +204,9 @@ class DemodPanel(QWidget):
         grid.addWidget(_lbl("Frames / FFT block"), row, 0)
         grid.addWidget(self.n_block, row, 1)
         row += 1
+        grid.addWidget(_lbl("Refresh every (frames)"), row, 0)
+        grid.addWidget(self.refresh_spin, row, 1)
+        row += 1
         grid.addWidget(_lbl("Expected freq."), row, 0)
         grid.addWidget(self.expected, row, 1)
         row += 1
@@ -231,7 +242,9 @@ class DemodPanel(QWidget):
         self.spectrum_plot = self.plot_widget.addPlot(
             row=0, col=0, colspan=2, title="Live spectrum"
         )
-        self.time_plot = self.plot_widget.addPlot(row=1, col=0, title="ROI time series")
+        self.time_plot = self.plot_widget.addPlot(
+            row=1, col=0, title="ROI rolling window"
+        )
         self.fft_plot = self.plot_widget.addPlot(row=1, col=1, title="FFT magnitude")
         self.history_plot = self.plot_widget.addPlot(
             row=2, col=0, colspan=2, title="Running peak amplitude"
@@ -303,7 +316,12 @@ class DemodPanel(QWidget):
         if self.worker is not None and self.worker.isRunning():
             stop_worker(self.worker)
         self.peak_history.clear()
-        self.worker = DemodulationWorker(self.backend, self.settings(), continuous=True)
+        self.worker = DemodulationWorker(
+            self.backend,
+            self.settings(),
+            continuous=True,
+            hop_frames=self.refresh_spin.value(),
+        )
         self.worker.frame_acquired.connect(self._update_spectrum)
         self.worker.block_complete.connect(lambda ts: self.time_curve.setData(ts))
         self.worker.demod_result.connect(self._handle_result)
@@ -374,6 +392,7 @@ class DemodPanel(QWidget):
             self.roi_end,
             self.roi_method,
             self.n_block,
+            self.refresh_spin,
             self.expected,
             self.search,
             self.window_combo,
@@ -401,6 +420,7 @@ class DemodPanel(QWidget):
         s.set("roi_end", self.roi_end.value())
         s.set("roi_method", self.roi_method.currentText())
         s.set("n_block", self.n_block.value())
+        s.set("refresh_frames", self.refresh_spin.value())
         s.set("f_expected", self.expected.value())
         s.set("f_search_hw", self.search.value())
         s.set("window", self.window_combo.currentText())
@@ -415,6 +435,7 @@ class DemodPanel(QWidget):
         if idx >= 0:
             self.roi_method.setCurrentIndex(idx)
         self.n_block.setValue(s.get_int("n_block", 512))
+        self.refresh_spin.setValue(s.get_int("refresh_frames", 64))
         self.expected.setValue(s.get_float("f_expected", 37.0))
         self.search.setValue(s.get_float("f_search_hw", 5.0))
         idx = self.window_combo.findText(s.get_str("window", "hann"))

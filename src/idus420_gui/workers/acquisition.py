@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Literal
 
@@ -13,6 +14,11 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from idus420_gui.camera.base import CameraBackend, TriggerMode
 from idus420_gui.processing.demodulation import DemodResult, demodulate
 from idus420_gui.processing.roi import integrate_roi
+
+# Frames acquired per camera kinetic series during continuous demodulation.
+# The rolling ROI window persists across chunks, so a large chunk keeps the
+# stream contiguous and limits how often a re-setup gap lands inside a window.
+_STREAM_CHUNK_FRAMES = 4096
 
 
 @dataclass(frozen=True)
@@ -36,7 +42,15 @@ class DemodulationSettings:
 
 
 class DemodulationWorker(QThread):
-    """Continuously acquires kinetic blocks and emits demodulated results."""
+    """Streams frames into a rolling ROI window and emits demodulated results.
+
+    In continuous mode the worker keeps a single sliding FIFO buffer of ROI
+    samples (``n_block`` long).  Each new frame appends one sample; the window
+    fills, then rolls, and demodulation re-runs every ``hop_frames`` frames so
+    the FFT, time series, and peak history update as a continuous stream rather
+    than in disjoint blocks.  ``continuous=False`` keeps the legacy single-block
+    behaviour used by one-shot callers and tests.
+    """
 
     frame_acquired = pyqtSignal(object)
     block_complete = pyqtSignal(object)
@@ -49,12 +63,15 @@ class DemodulationWorker(QThread):
         backend: CameraBackend,
         settings: DemodulationSettings,
         continuous: bool = True,
+        hop_frames: int = 0,
         parent: object | None = None,
     ) -> None:
         super().__init__(parent)
         self.backend = backend
         self.settings = settings
         self.continuous = continuous
+        # Frames between rolling-window updates; 0 selects an automatic cadence.
+        self._hop_frames = int(hop_frames)
         self._running = True
 
     def stop(self) -> None:
@@ -64,57 +81,106 @@ class DemodulationWorker(QThread):
 
     def run(self) -> None:
         try:
-            timeout_ms = self.settings.frame_timeout_ms()
-            while self._running:
-                self.backend.setup_kinetic(
-                    self.settings.exposure_s,
-                    self.settings.n_block,
-                    TriggerMode.EXTERNAL,
-                )
-                self.backend.start()
-                # Accumulate only the frames actually acquired instead of
-                # preallocating the full block, which can be very large.
-                block_frames: list[np.ndarray] = []
-                for idx in range(self.settings.n_block):
-                    if not self._running:
-                        break
-                    if not self.backend.wait_next_frame(timeout_ms):
-                        self.error.emit(
-                            f"No triggers detected after {timeout_ms / 1000:.1f} s — "
-                            "check external trigger cabling."
-                        )
-                        self._running = False
-                        break
-                    frame = self.backend.get_oldest_frame()
-                    block_frames.append(frame)
-                    if idx == 0 or idx == self.settings.n_block - 1:
-                        self.frame_acquired.emit(frame.copy())
-                acquired = len(block_frames)
-                if acquired:
-                    block = np.stack(block_frames, axis=0)
-                    roi_ts = integrate_roi(
-                        block,
-                        self.settings.pixel_start,
-                        self.settings.pixel_end,
-                        self.settings.roi_method,
-                    )
-                    self.block_complete.emit(roi_ts.copy())
-                    if acquired >= 4:
-                        result = demodulate(
-                            roi_ts,
-                            self.settings.trigger_frequency_hz,
-                            self.settings.f_expected,
-                            self.settings.f_search_halfwidth,
-                            self.settings.window,
-                        )
-                        self.demod_result.emit(result)
-                if not self.continuous:
-                    break
+            if self.continuous:
+                self._run_continuous()
+            else:
+                self._run_single_block()
         except Exception as exc:  # noqa: BLE001 - worker must report and exit cleanly.
             self.error.emit(str(exc))
         finally:
             self.backend.abort()
             self.worker_finished.emit()
+
+    def _run_continuous(self) -> None:
+        s = self.settings
+        n = max(4, s.n_block)
+        hop = self._hop_frames if self._hop_frames > 0 else max(1, n // 8)
+        chunk = max(_STREAM_CHUNK_FRAMES, n * 2)
+        timeout_ms = s.frame_timeout_ms()
+        # Persisted across acquisition chunks so the demodulation window stays
+        # contiguous instead of restarting every block.
+        roi_window: deque[float] = deque(maxlen=n)
+        since_update = 0
+        while self._running:
+            self.backend.setup_kinetic(s.exposure_s, chunk, TriggerMode.EXTERNAL)
+            self.backend.start()
+            for _ in range(chunk):
+                if not self._running:
+                    break
+                if not self.backend.wait_next_frame(timeout_ms):
+                    self.error.emit(
+                        f"No triggers detected after {timeout_ms / 1000:.1f} s — "
+                        "check external trigger cabling."
+                    )
+                    self._running = False
+                    break
+                frame = self.backend.get_oldest_frame()
+                roi_window.append(
+                    float(
+                        integrate_roi(
+                            frame.reshape(1, -1),
+                            s.pixel_start,
+                            s.pixel_end,
+                            s.roi_method,
+                        )[0]
+                    )
+                )
+                since_update += 1
+                if since_update >= hop:
+                    since_update = 0
+                    self.frame_acquired.emit(frame.copy())
+                    self._emit_window(roi_window)
+
+    def _emit_window(self, roi_window: deque[float]) -> None:
+        ts = np.fromiter(roi_window, dtype=np.float64, count=len(roi_window))
+        self.block_complete.emit(ts)
+        if ts.size >= 4:
+            result = demodulate(
+                ts,
+                self.settings.trigger_frequency_hz,
+                self.settings.f_expected,
+                self.settings.f_search_halfwidth,
+                self.settings.window,
+            )
+            self.demod_result.emit(result)
+
+    def _run_single_block(self) -> None:
+        s = self.settings
+        timeout_ms = s.frame_timeout_ms()
+        self.backend.setup_kinetic(s.exposure_s, s.n_block, TriggerMode.EXTERNAL)
+        self.backend.start()
+        # Accumulate only the frames actually acquired instead of preallocating
+        # the full block, which can be very large.
+        block_frames: list[np.ndarray] = []
+        for idx in range(s.n_block):
+            if not self._running:
+                break
+            if not self.backend.wait_next_frame(timeout_ms):
+                self.error.emit(
+                    f"No triggers detected after {timeout_ms / 1000:.1f} s — "
+                    "check external trigger cabling."
+                )
+                self._running = False
+                break
+            frame = self.backend.get_oldest_frame()
+            block_frames.append(frame)
+            if idx == 0 or idx == s.n_block - 1:
+                self.frame_acquired.emit(frame.copy())
+        acquired = len(block_frames)
+        if not acquired:
+            return
+        block = np.stack(block_frames, axis=0)
+        roi_ts = integrate_roi(block, s.pixel_start, s.pixel_end, s.roi_method)
+        self.block_complete.emit(roi_ts.copy())
+        if acquired >= 4:
+            result = demodulate(
+                roi_ts,
+                s.trigger_frequency_hz,
+                s.f_expected,
+                s.f_search_halfwidth,
+                s.window,
+            )
+            self.demod_result.emit(result)
 
 
 class AcquisitionWorker(QThread):
