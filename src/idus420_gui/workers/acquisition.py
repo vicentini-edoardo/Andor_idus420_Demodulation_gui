@@ -270,6 +270,7 @@ class AcquisitionWorker(QThread):
         demod_results: list[DemodResult] = []
         roi_buffer: list[float] = []   # running accumulator for per-block demodulation
         roi_all: list[float] = []      # all ROI values in acquisition order
+        frame_times: list[float] = []  # per-frame timestamps (s) relative to start
         try:
             timeout_ms = self.settings.frame_timeout_ms()
             self.backend.setup_kinetic(
@@ -327,6 +328,7 @@ class AcquisitionWorker(QThread):
                     )
                 for frame in ready:
                     all_frames.append(frame.copy())
+                    frame_times.append(time.monotonic() - start_wall)
                     self.frame_acquired.emit(frame.copy())
 
                     # Real-time ROI integration and per-block demodulation.
@@ -370,6 +372,7 @@ class AcquisitionWorker(QThread):
                 {
                     "roi_timeseries": roi_ts,
                     "demod_results": demod_results,
+                    "frame_times_s": np.asarray(frame_times, dtype=np.float64),
                 },
             )
             if self.sif_path:

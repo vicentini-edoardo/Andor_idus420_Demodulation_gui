@@ -36,7 +36,7 @@ snom = [
 [project.scripts]
 idus420-gui = "idus420_gui.__main__:main"
 
-[project.gui_scripts]
+[project.gui-scripts]
 idus420-gui-w = "idus420_gui.__main__:main"
 
 [tool.setuptools.packages.find]
@@ -48,4 +48,4 @@ target-version = "py38"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["SLF001"]   # _validate_roi cross-panel call is intentional
+ignore = ["SLF001"]   # private-member access across panels/theme is intentional

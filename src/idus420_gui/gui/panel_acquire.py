@@ -235,17 +235,18 @@ class AcquisitionPanel(QWidget):
         }
         roi_ts = processed["roi_timeseries"]  # type: ignore[index]
         results = processed["demod_results"]  # type: ignore[index]
+        frame_times = processed.get("frame_times_s")  # type: ignore[attr-defined]
         if self.save_npz_cb.isChecked():
             path = out_dir / f"{stem}.npz"
-            save_npz(path, frames, roi_ts, results, metadata)  # type: ignore[arg-type]
+            save_npz(path, frames, roi_ts, results, metadata, frame_times)  # type: ignore[arg-type]
             self.log_message.emit(f"Saved {path}")
         if self.save_h5_cb.isChecked():
             path = out_dir / f"{stem}.h5"
-            save_h5(path, frames, roi_ts, results, metadata)  # type: ignore[arg-type]
+            save_h5(path, frames, roi_ts, results, metadata, frame_times)  # type: ignore[arg-type]
             self.log_message.emit(f"Saved {path}")
         if self.save_txt_cb.isChecked():
             path = out_dir / f"{stem}.txt"
-            save_txt(path, frames, roi_ts, results, metadata)  # type: ignore[arg-type]
+            save_txt(path, frames, roi_ts, results, metadata, frame_times)  # type: ignore[arg-type]
             self.log_message.emit(f"Saved {path}")
         if self.save_sif_cb.isChecked():
             self.log_message.emit(f"Saved {out_dir / f'{stem}.sif'}")

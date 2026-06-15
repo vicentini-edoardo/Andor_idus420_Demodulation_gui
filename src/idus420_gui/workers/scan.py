@@ -37,7 +37,8 @@ class PointResult:
     actual_xyz_nm: tuple[float, float, float]
     frames: np.ndarray                   # (n_frames, frame_width) uint16
     roi_timeseries: np.ndarray           # (n_frames,) float64
-    demod_results: list[DemodResult | None]  # index 0 = 0ω, 1 = 1ω, 2 = 2ω, 3 = 3ω per n_block chunk
+    # index 0 = 0ω, 1 = 1ω, 2 = 2ω, 3 = 3ω per n_block chunk
+    demod_results: list[DemodResult | None]
     snom_samples: list[SnomSample]       # one per frame (stream_continuous) or one total
 
 
@@ -51,7 +52,9 @@ class ScanResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-def _empty_demod_result(f_target: float, trigger_frequency_hz: float, n_samples: int) -> DemodResult:
+def _empty_demod_result(
+    f_target: float, trigger_frequency_hz: float, n_samples: int
+) -> DemodResult:
     f_axis = np.fft.rfftfreq(max(1, int(n_samples)), d=1.0 / trigger_frequency_hz)
     return DemodResult(
         peak_frequency=float(f_target),

@@ -12,7 +12,6 @@ from idus420_gui.camera.base import (
     CameraBackend,
     CameraConfig,
     CameraError,
-    CropConfig,
     ReadMode,
     TempStatus,
     TriggerMode,
@@ -140,7 +139,11 @@ class MockBackend(CameraBackend):
                 raise CameraError("Crop vbin must be >= 1.")
             self._validate_horizontal_bin(hbin, crop.crop_width)
         else:
-            hbin = cfg.single_track.horizontal_bin if cfg.read_mode is ReadMode.SINGLE_TRACK else cfg.fvb_horizontal_bin
+            hbin = (
+                cfg.single_track.horizontal_bin
+                if cfg.read_mode is ReadMode.SINGLE_TRACK
+                else cfg.fvb_horizontal_bin
+            )
             self._validate_horizontal_bin(hbin, xpix)
         if cfg.read_mode is ReadMode.SINGLE_TRACK:
             st = cfg.single_track

@@ -18,7 +18,6 @@ from idus420_gui.camera.base import (
     CameraBackend,
     CameraConfig,
     CameraError,
-    CropConfig,
     ReadMode,
     ShutterMode,
     TempStatus,

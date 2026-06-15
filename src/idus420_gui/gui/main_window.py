@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer, QThread, pyqtSignal
+from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QLabel,
@@ -23,7 +23,6 @@ from idus420_gui.gui.panel_demod import DemodPanel
 from idus420_gui.gui.panel_live import LiveSpectrumPanel
 from idus420_gui.gui.panel_scan import ScanPanel
 from idus420_gui.gui.widgets import LogView
-
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -167,7 +166,8 @@ class MainWindow(QMainWindow):
         self._update_tab_state()
 
     def _poll_status(self) -> None:
-        self.camera_panel.poll_temperature()
+        # Temperature is polled separately on its own 5 s timer to limit SDK
+        # contention; this 1 Hz status poll only refreshes acquisition state.
         if self.backend and self.backend.is_connected():
             self.acquisition_label.setText(self.backend.status().value)
         else:
@@ -179,7 +179,10 @@ class MainWindow(QMainWindow):
         self.tabs.setTabEnabled(1, enabled or self.acquisition_running)
         self.tabs.setTabEnabled(2, enabled or self.acquisition_running)
         self.tabs.setTabEnabled(3, enabled or self.acquisition_running)
-        self.tabs.setTabEnabled(4, enabled or self.acquisition_running)
+        # Scan tab is always accessible so parameters can be edited before a
+        # camera is connected; ScanPanel.start() guards against missing
+        # camera/stage backends itself.
+        self.tabs.setTabEnabled(4, True)
 
     def _update_app(self) -> None:
         self._update_btn.setEnabled(False)

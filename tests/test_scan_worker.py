@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from idus420_gui.camera.mock import MockBackend, MockSpectrumConfig
+from idus420_gui.camera.mock import MockBackend
 from idus420_gui.motion.base import ScanGrid
 from idus420_gui.motion.mock import MockStageBackend
 from idus420_gui.workers.acquisition import DemodulationSettings

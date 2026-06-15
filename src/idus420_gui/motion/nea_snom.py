@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import queue
 import threading
 
@@ -10,8 +11,8 @@ try:
     import time
     from time import sleep
 
-    import nest_asyncio
     import nea_tools
+    import nest_asyncio
 
     NEA_TOOLS_AVAILABLE = True
 except ImportError:
@@ -49,20 +50,18 @@ class NeaSnomBackend(StageBackend):
     def connect(self, host: str = "nea-server") -> None:
         # Always create a fresh event loop to avoid reusing a closed or
         # dirty loop from a previous scan session.
-        try:
+        with contextlib.suppress(Exception):
             old_loop = asyncio.get_event_loop()
             if not old_loop.is_closed():
                 old_loop.close()
-        except Exception:  # noqa: BLE001
-            pass
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         nest_asyncio.apply(self._loop)
         self._loop.run_until_complete(
             nea_tools.connect(host, fingerprint=None, path_to_dll="")
         )
-        import neaspec  # noqa: PLC0415
         import Nea.Client.SharedDefinitions as nea  # noqa: PLC0415
+        import neaspec  # noqa: PLC0415
         from nea_tools.microscope import stream  # noqa: PLC0415
 
         self._context = neaspec.context
@@ -72,10 +71,8 @@ class NeaSnomBackend(StageBackend):
 
     def disconnect(self) -> None:
         if self._connected:
-            try:
+            with contextlib.suppress(Exception):
                 nea_tools.disconnect()
-            except Exception:  # noqa: BLE001
-                pass
         self._connected = False
 
     def is_connected(self) -> bool:
@@ -258,10 +255,20 @@ class NeaSnomBackend(StageBackend):
                         pass
                 time.sleep(0.02)
 
-                # Drain all frame notifications that arrived during this poll tick.
+                # Drain all frame notifications that arrived during this poll
+                # tick.  At trigger rates faster than the 20 ms poll several
+                # frames share one poll window; emit the *same* averaged sample
+                # for each rather than resetting the window mid-drain (which
+                # previously yielded all-NaN samples for every frame after the
+                # first).
+                n_pending = 0
                 while frame_event.acquire(blocking=False):
+                    n_pending += 1
+                if n_pending:
                     t_s = time.monotonic() - t0_scan
-                    out_queue.put(_flush(win_sum, win_cnt, t_s))
+                    sample = _flush(win_sum, win_cnt, t_s)
+                    for _ in range(n_pending):
+                        out_queue.put(sample)
                     win_sum = {k: 0.0 for k in keys}
                     win_cnt = {k: 0 for k in keys}
 

@@ -8,7 +8,7 @@ from PyQt6.QtCore import QSettings
 
 from idus420_gui.camera.mock import MockBackend
 from idus420_gui.gui.panel_demod import DemodPanel
-from idus420_gui.gui.panel_scan import ScanPanel
+from idus420_gui.gui.panel_scan import NEA_TOOLS_AVAILABLE, ScanPanel
 
 
 def _make_panels():
@@ -41,7 +41,10 @@ def test_start_without_backend_logs_error(qtbot) -> None:  # type: ignore[no-unt
     messages: list[str] = []
     panel.log_message.connect(messages.append)
     panel.start()
-    assert any("No camera backend" in m for m in messages)
+    # With no camera (and, in CI, no SNOM stage) start() must refuse and report
+    # a backend-related error rather than launching a worker.
+    assert panel.worker is None
+    assert any("backend" in m.lower() for m in messages)
 
 
 def test_settings_round_trip(qtbot) -> None:  # type: ignore[no-untyped-def]
@@ -51,8 +54,8 @@ def test_settings_round_trip(qtbot) -> None:  # type: ignore[no-untyped-def]
     p1 = ScanPanel(demod)
     p1.nx.setValue(7)
     p1.ny.setValue(4)
-    p1.x_step.setValue(3000.0)
-    p1.y_step.setValue(1500.0)
+    p1.x_length.setValue(3.0)
+    p1.y_length.setValue(1.5)
     p1.snom_host.setText("custom-host")
     p1.stem.setText("my_scan")
     p1._save_settings()
@@ -60,8 +63,8 @@ def test_settings_round_trip(qtbot) -> None:  # type: ignore[no-untyped-def]
     p2 = ScanPanel(demod)
     assert p2.nx.value() == 7
     assert p2.ny.value() == 4
-    assert p2.x_step.value() == pytest.approx(3000.0)
-    assert p2.y_step.value() == pytest.approx(1500.0)
+    assert p2.x_length.value() == pytest.approx(3.0)
+    assert p2.y_length.value() == pytest.approx(1.5)
     assert p2.snom_host.text() == "custom-host"
     assert p2.stem.text() == "my_scan"
 
@@ -78,6 +81,10 @@ def test_stop_without_worker_does_not_crash(qtbot) -> None:  # type: ignore[no-u
     panel.stop()
 
 
+@pytest.mark.skipif(
+    not NEA_TOOLS_AVAILABLE,
+    reason="ScanPanel.start() requires the nea_tools SNOM stage backend.",
+)
 def test_running_changed_emitted_on_start(qtbot) -> None:  # type: ignore[no-untyped-def]
     demod, panel = _make_panels()
     backend = MockBackend()
