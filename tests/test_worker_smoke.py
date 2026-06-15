@@ -39,6 +39,45 @@ def test_demodulation_worker_one_block(qtbot) -> None:  # type: ignore[no-untype
     assert abs(result.peak_frequency - 37.0) < 3.0
 
 
+def test_demodulation_worker_continuous_rolling_window(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """Continuous mode keeps a rolling window and emits ongoing results."""
+    backend = MockBackend(
+        spectrum=MockSpectrumConfig(sample_rate_hz=500.0, true_modulation_hz=37.0)
+    )
+    backend.connect()
+    backend.cooler_on()
+    settings = DemodulationSettings(
+        exposure_s=0.001,
+        trigger_frequency_hz=500.0,
+        pixel_start=480,
+        pixel_end=560,
+        roi_method="sum",
+        n_block=128,
+        f_expected=37.0,
+        f_search_halfwidth=5.0,
+        window="hann",
+    )
+    worker = DemodulationWorker(backend, settings, continuous=True)
+
+    results: list[object] = []
+    windows: list[np.ndarray] = []
+    worker.demod_result.connect(results.append)
+    worker.block_complete.connect(lambda ts: windows.append(np.asarray(ts).copy()))
+
+    with qtbot.waitSignal(worker.worker_finished, timeout=5000):
+        worker.start()
+        qtbot.waitUntil(lambda: len(results) >= 3, timeout=5000)
+        worker.stop()
+
+    worker.wait(3000)
+
+    # Rolling window updates produce a stream of results, each locked to the
+    # modulation frequency, and every emitted window is exactly n_block long.
+    assert len(results) >= 3
+    assert all(w.size == settings.n_block for w in windows)
+    assert abs(results[-1].peak_frequency - 37.0) < 3.0  # type: ignore[attr-defined]
+
+
 def test_live_spectrum_worker_emits_roi_samples(qtbot) -> None:  # type: ignore[no-untyped-def]
     backend = MockBackend(
         spectrum=MockSpectrumConfig(sample_rate_hz=500.0, true_modulation_hz=37.0)
