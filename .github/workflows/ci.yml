@@ -15,6 +15,13 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.10", "3.11", "3.12"]
 
+    # Run Qt headless via the offscreen platform plugin (matches the documented
+    # local test command). This avoids the xcb platform plugin and its growing
+    # set of system X libraries, which abort QApplication creation under xvfb.
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTEST_QT_API: pyqt6
+
     steps:
       - uses: actions/checkout@v4
 
