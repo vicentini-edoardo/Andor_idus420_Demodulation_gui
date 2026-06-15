@@ -64,3 +64,32 @@ def test_live_panel_spinboxes_follow_roi_region(qtbot) -> None:  # type: ignore[
     )
 
     assert tuple(round(v) for v in panel.roi_region.getRegion()) == (11, 22)
+
+
+def test_live_panel_wavelength_axis_maps_roi_and_relabels(qtbot) -> None:  # type: ignore[no-untyped-def]
+    import numpy as np
+
+    backend = MockBackend(detector=(128, 255))
+    backend.connect()
+
+    panel = LiveSpectrumPanel()
+    qtbot.addWidget(panel)
+    panel.set_backend(backend)
+    panel.roi_start.setValue(10)
+    panel.roi_end.setValue(20)
+
+    # Linear calibration: pixel i -> 400 + i nm.
+    wavelengths = 400.0 + np.arange(128, dtype=float)
+    panel.set_wavelength_axis(wavelengths)
+
+    assert "Wavelength (nm)" in panel.spectrum_plot.getAxis("bottom").labelText
+    # The ROI overlay is positioned in nm, not pixels.
+    lo, hi = panel.roi_region.getRegion()
+    assert lo == pytest.approx(410.0)
+    assert hi == pytest.approx(420.0)
+
+    # Reverting to pixels relabels the axis and restores pixel positions.
+    panel.set_wavelength_axis(None)
+    assert "Pixel" in panel.spectrum_plot.getAxis("bottom").labelText
+    lo, hi = panel.roi_region.getRegion()
+    assert (round(lo), round(hi)) == (10, 20)

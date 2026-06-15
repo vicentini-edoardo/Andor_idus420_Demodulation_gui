@@ -10,6 +10,7 @@ from idus420_gui.gui.panel_acquire import AcquisitionPanel
 from idus420_gui.gui.panel_camera import CameraPanel
 from idus420_gui.gui.panel_demod import DemodPanel
 from idus420_gui.gui.panel_live import LiveSpectrumPanel
+from idus420_gui.gui.panel_spectrograph import SpectrographPanel
 from idus420_gui.gui.widgets import LogView
 
 
@@ -25,10 +26,12 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.camera_panel = CameraPanel()
+        self.spectro_panel = SpectrographPanel()
         self.live_panel = LiveSpectrumPanel()
         self.demod_panel = DemodPanel()
         self.acquire_panel = AcquisitionPanel(self.demod_panel)
         self.tabs.addTab(self.camera_panel, "Camera Settings")
+        self.tabs.addTab(self.spectro_panel, "Spectrometer")
         self.tabs.addTab(self.live_panel, "Live Spectrum")
         self.tabs.addTab(self.demod_panel, "Demodulation Alignment")
         self.tabs.addTab(self.acquire_panel, "Acquisition")
@@ -56,6 +59,10 @@ class MainWindow(QMainWindow):
         self.camera_panel.exposure_changed.connect(self.demod_panel.set_exposure)
         self.camera_panel.frame_geometry_changed.connect(self.live_panel.set_frame_width)
         self.camera_panel.frame_geometry_changed.connect(self.demod_panel.set_frame_width)
+        self.camera_panel.frame_geometry_changed.connect(self.spectro_panel.set_frame_width)
+        self.spectro_panel.log_message.connect(self.log)
+        self.spectro_panel.calibration_changed.connect(self.live_panel.set_wavelength_axis)
+        self.spectro_panel.calibration_changed.connect(self.demod_panel.set_wavelength_axis)
         self.live_panel.log_message.connect(self.log)
         self.demod_panel.log_message.connect(self.log)
         self.acquire_panel.log_message.connect(self.log)
@@ -132,11 +139,13 @@ class MainWindow(QMainWindow):
             self.acquisition_label.setText(AcquisitionStatus.IDLE.value)
 
     def _update_tab_state(self) -> None:
+        # Tab 0 (Camera Settings) and tab 1 (Spectrometer) connect independently
+        # and stay enabled; the acquisition tabs require a connected camera.
         connected = self.backend is not None and self.backend.is_connected()
         enabled = connected and not self.acquisition_running
-        self.tabs.setTabEnabled(1, enabled or self.acquisition_running)
         self.tabs.setTabEnabled(2, enabled or self.acquisition_running)
         self.tabs.setTabEnabled(3, enabled or self.acquisition_running)
+        self.tabs.setTabEnabled(4, enabled or self.acquisition_running)
 
     def closeEvent(self, event: object) -> None:
         if self.live_panel.worker:
@@ -150,4 +159,6 @@ class MainWindow(QMainWindow):
             self.acquire_panel.worker.wait(2000)
         if self.backend:
             self.backend.disconnect()
+        if self.spectro_panel.backend:
+            self.spectro_panel.backend.disconnect()
         super().closeEvent(event)  # type: ignore[arg-type]
