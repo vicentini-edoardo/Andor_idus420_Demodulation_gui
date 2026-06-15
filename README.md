@@ -6,7 +6,7 @@ Desktop GUI for the **Andor iDus 420** spectrometer camera. Supports live spectr
 
 - **Camera Settings**: connect to the mock or Andor backend, control cooling, and apply camera settings.
 - **Live Spectrum**: view the incoming spectrum, select an ROI, and plot the rolling summed counts from that ROI over time.
-- **Demodulation Alignment**: monitor spectrum, ROI time series, FFT magnitude, and running peak amplitude in real time.
+- **Demodulation Alignment**: monitor spectrum, ROI time series, FFT magnitude, and running peak amplitude in real time, using a rolling window of the most recent samples that re-demodulates continuously as frames arrive.
 - **Acquisition**: capture a fixed duration or frame count and save data as `.npz`, `.h5`, `.txt`, or `.sif` when supported.
 - **Scan**: 2-D XY raster scan using the NEA SNOM sample stage — configurable grid, snake or raster order, per-point demodulation, live scan map, and automatic HDF5 export.
 - **Mock backend**: run and test the app without hardware.
@@ -70,8 +70,8 @@ Use the **Mock** backend unless the camera and Andor SDK are available on the ma
 ### Demodulation Alignment
 
 - Set trigger frequency and ROI bounds
-- Run continuous ROI demodulation
-- Inspect FFT peak amplitude and frequency in real time
+- Run continuous ROI demodulation over a rolling (sliding) window of the last `Frames / FFT block` samples
+- Inspect FFT peak amplitude and frequency in real time, updated as each new frame slides into the window
 
 ### Acquisition
 

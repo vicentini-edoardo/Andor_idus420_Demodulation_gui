@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Literal
 
@@ -54,7 +55,15 @@ class DemodulationSettings:
 
 
 class DemodulationWorker(QThread):
-    """Continuously acquires kinetic blocks and emits demodulated results."""
+    """Acquires kinetic frames and emits demodulated results.
+
+    In continuous mode the worker keeps a *rolling* window of the most recent
+    ``n_block`` ROI samples and re-runs the FFT each time fresh frames arrive
+    (throttled to the GUI update rate).  This gives a live, smoothly updating
+    alignment view instead of one result per non-overlapping block.  In
+    one-shot mode (``continuous=False``) it collects a single block of
+    ``n_block`` frames, emits one result, and exits.
+    """
 
     frame_acquired = pyqtSignal(object)
     block_complete = pyqtSignal(object)
@@ -84,13 +93,18 @@ class DemodulationWorker(QThread):
         self.setPriority(self.Priority.HighPriority)
         try:
             timeout_ms = self.settings.frame_timeout_ms()
+            n_block = self.settings.n_block
             acquisition_frames = (
-                self.settings.n_block
+                n_block
                 if not self.continuous
-                else max(self.settings.n_block * 64, _LIVE_ACQUISITION_FRAMES)
+                else max(n_block * 64, _LIVE_ACQUISITION_FRAMES)
             )
+            # Rolling window of the most recent ROI samples (continuous mode);
+            # discrete accumulator for the one-shot block (non-continuous mode).
+            roi_window: deque[float] = deque(maxlen=n_block)
             block_frames: list[np.ndarray] = []
             last_preview_s = 0.0
+            last_demod_s = 0.0
             while self._running:
                 self.backend.setup_kinetic(
                     self.settings.exposure_s,
@@ -148,24 +162,33 @@ class DemodulationWorker(QThread):
                             self.backend,
                             acquisition_frames - acquired,
                         )
-                    now = time.monotonic()
                     for frame in ready:
-                        block_frames.append(frame.copy())
                         acquired += 1
+                        now = time.monotonic()
                         if now - last_preview_s >= _GUI_UPDATE_INTERVAL_S:
                             self.frame_acquired.emit(frame.copy())
                             last_preview_s = now
-                        if len(block_frames) == self.settings.n_block:
-                            block = np.stack(block_frames, axis=0)
-                            block_frames.clear()
-                            roi_ts = integrate_roi(
-                                block,
-                                self.settings.pixel_start,
-                                self.settings.pixel_end,
-                                self.settings.roi_method,
+                        if self.continuous:
+                            # Push the new ROI sample into the rolling window and
+                            # re-demodulate the full window (throttled) once it fills.
+                            roi_window.append(
+                                float(
+                                    integrate_roi(
+                                        frame.reshape(1, -1),
+                                        self.settings.pixel_start,
+                                        self.settings.pixel_end,
+                                        self.settings.roi_method,
+                                    )[0]
+                                )
                             )
-                            self.block_complete.emit(roi_ts.copy())
-                            if roi_ts.size >= 4:
+                            if (
+                                len(roi_window) == n_block
+                                and now - last_demod_s >= _GUI_UPDATE_INTERVAL_S
+                            ):
+                                roi_ts = np.fromiter(
+                                    roi_window, dtype=np.float64, count=n_block
+                                )
+                                self.block_complete.emit(roi_ts)
                                 result = demodulate(
                                     roi_ts,
                                     self.settings.trigger_frequency_hz,
@@ -174,6 +197,28 @@ class DemodulationWorker(QThread):
                                     self.settings.window,
                                 )
                                 self.demod_result.emit(result)
+                                last_demod_s = now
+                        else:
+                            block_frames.append(frame.copy())
+                            if len(block_frames) == n_block:
+                                block = np.stack(block_frames, axis=0)
+                                block_frames.clear()
+                                roi_ts = integrate_roi(
+                                    block,
+                                    self.settings.pixel_start,
+                                    self.settings.pixel_end,
+                                    self.settings.roi_method,
+                                )
+                                self.block_complete.emit(roi_ts.copy())
+                                if roi_ts.size >= 4:
+                                    result = demodulate(
+                                        roi_ts,
+                                        self.settings.trigger_frequency_hz,
+                                        self.settings.f_expected,
+                                        self.settings.f_search_halfwidth,
+                                        self.settings.window,
+                                    )
+                                    self.demod_result.emit(result)
                 if not self.continuous:
                     break
         except Exception as exc:  # noqa: BLE001 - worker must report and exit cleanly.
