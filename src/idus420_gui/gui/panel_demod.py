@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, cast
 
+import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -41,6 +42,7 @@ class DemodPanel(QWidget):
         super().__init__(parent)
         self.backend: CameraBackend | None = None
         self._detector_width: int = 100_000
+        self._wavelength_axis: np.ndarray | None = None
         self.worker: DemodulationWorker | None = None
         self.peak_history: list[float] = []
         self._build_ui()
@@ -62,6 +64,50 @@ class DemodPanel(QWidget):
 
     def set_exposure(self, value: float) -> None:
         self.exposure_spin.setValue(value)
+
+    def set_wavelength_axis(self, wavelengths: object) -> None:
+        """Plot the live spectrum against wavelength (nm) when calibrated.
+
+        Passing ``None`` (or an empty array) reverts to the pixel-index axis.
+        ROI spin boxes remain in pixel units; only the plotted spectrum and the
+        ROI overlay are mapped through the calibration.
+        """
+        if wavelengths is None:
+            self._wavelength_axis = None
+        else:
+            arr = np.asarray(wavelengths, dtype=np.float64)
+            self._wavelength_axis = arr if arr.size else None
+        in_nm = self._wavelength_axis is not None
+        self.spectrum_plot.setLabel("bottom", "Wavelength (nm)" if in_nm else "Pixel")
+        self._refresh_spectrum_x()
+        self._update_roi_region()
+
+    def _spectrum_x(self, n: int) -> np.ndarray:
+        """Return the x-coordinates for an ``n``-sample spectrum."""
+        wl = self._wavelength_axis
+        if wl is not None and wl.size == n:
+            return wl
+        return np.arange(n)
+
+    def _px_to_x(self, px: int) -> float:
+        """Map a pixel index to its plotted x-coordinate."""
+        wl = self._wavelength_axis
+        if wl is None or wl.size == 0:
+            return float(px)
+        idx = int(min(max(px, 0), wl.size - 1))
+        return float(wl[idx])
+
+    def _refresh_spectrum_x(self) -> None:
+        """Re-plot the current spectrum after the x-axis mapping changes."""
+        y = self.spectrum_curve.getData()[1]
+        if y is None:
+            return
+        y_arr = np.asarray(y)
+        self.spectrum_curve.setData(self._spectrum_x(y_arr.size), y_arr)
+
+    def _update_spectrum(self, frame: object) -> None:
+        arr = np.asarray(frame)
+        self.spectrum_curve.setData(self._spectrum_x(arr.size), arr)
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -201,6 +247,8 @@ class DemodPanel(QWidget):
         for pi in (self.spectrum_plot, self.time_plot, self.fft_plot, self.history_plot):
             theme.style_plot_item(pi)
 
+        self.spectrum_plot.setLabel("bottom", "Pixel")
+        self.spectrum_plot.setLabel("left", "Counts")
         self.spectrum_curve = self.spectrum_plot.plot(
             pen=pg.mkPen(theme.CURVE_YELLOW, width=1.5)
         )
@@ -256,7 +304,7 @@ class DemodPanel(QWidget):
             stop_worker(self.worker)
         self.peak_history.clear()
         self.worker = DemodulationWorker(self.backend, self.settings(), continuous=True)
-        self.worker.frame_acquired.connect(lambda frame: self.spectrum_curve.setData(frame))
+        self.worker.frame_acquired.connect(self._update_spectrum)
         self.worker.block_complete.connect(lambda ts: self.time_curve.setData(ts))
         self.worker.demod_result.connect(self._handle_result)
         self.worker.error.connect(self.log_message.emit)
@@ -314,7 +362,9 @@ class DemodPanel(QWidget):
         )
 
     def _update_roi_region(self) -> None:
-        self.roi_region.setRegion((self.roi_start.value(), self.roi_end.value()))
+        lo = self._px_to_x(self.roi_start.value())
+        hi = self._px_to_x(self.roi_end.value())
+        self.roi_region.setRegion((min(lo, hi), max(lo, hi)))
 
     def _set_running_ui(self, running: bool) -> None:
         for widget in [

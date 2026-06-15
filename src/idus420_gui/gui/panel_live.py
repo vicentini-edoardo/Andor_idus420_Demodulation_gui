@@ -41,6 +41,7 @@ class LiveSpectrumPanel(QWidget):
         self.backend: CameraBackend | None = None
         self.worker: LiveSpectrumWorker | None = None
         self._detector_width = 100_000
+        self._wavelength_axis: np.ndarray | None = None
         self._syncing_roi = False
         self._history_t: deque[float] = deque()
         self._history_roi: deque[float] = deque()
@@ -64,6 +65,53 @@ class LiveSpectrumPanel(QWidget):
 
     def set_exposure(self, value: float) -> None:
         self.exposure_spin.setValue(value)
+
+    def set_wavelength_axis(self, wavelengths: object) -> None:
+        """Plot the spectrum against wavelength (nm) when a calibration exists.
+
+        Passing ``None`` (or an empty array) reverts to the pixel-index axis.
+        ROI spin boxes stay in pixel units; only the plotted x-coordinates and
+        the ROI overlay are mapped through the calibration.
+        """
+        if wavelengths is None:
+            self._wavelength_axis = None
+        else:
+            arr = np.asarray(wavelengths, dtype=np.float64)
+            self._wavelength_axis = arr if arr.size else None
+        in_nm = self._wavelength_axis is not None
+        self.spectrum_plot.setLabel("bottom", "Wavelength (nm)" if in_nm else "Pixel")
+        self._refresh_spectrum_x()
+        self._update_roi_region()
+
+    def _spectrum_x(self, n: int) -> np.ndarray:
+        """Return the x-coordinates for an ``n``-sample spectrum."""
+        wl = self._wavelength_axis
+        if wl is not None and wl.size == n:
+            return wl
+        return np.arange(n)
+
+    def _px_to_x(self, px: int) -> float:
+        """Map a pixel index to its plotted x-coordinate."""
+        wl = self._wavelength_axis
+        if wl is None or wl.size == 0:
+            return float(px)
+        idx = int(min(max(px, 0), wl.size - 1))
+        return float(wl[idx])
+
+    def _x_to_px(self, x: float) -> int:
+        """Map a plotted x-coordinate back to the nearest pixel index."""
+        wl = self._wavelength_axis
+        if wl is None or wl.size == 0:
+            return int(round(x))
+        return int(np.argmin(np.abs(wl - x)))
+
+    def _refresh_spectrum_x(self) -> None:
+        """Re-plot the current spectrum after the x-axis mapping changes."""
+        y = self.spectrum_curve.getData()[1]
+        if y is None:
+            return
+        y_arr = np.asarray(y)
+        self.spectrum_curve.setData(self._spectrum_x(y_arr.size), y_arr)
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -173,6 +221,8 @@ class LiveSpectrumPanel(QWidget):
         self.history_curve = self.history_plot.plot(
             pen=pg.mkPen(theme.CURVE_CYAN, width=1.8)
         )
+        self.spectrum_plot.setLabel("bottom", "Pixel")
+        self.spectrum_plot.setLabel("left", "Counts")
         self.history_plot.setLabel("bottom", "Time (s)")
         self.history_plot.setLabel("left", "ROI sum (counts)")
 
@@ -245,7 +295,7 @@ class LiveSpectrumPanel(QWidget):
 
     def _update_frame(self, frame: object) -> None:
         arr = np.asarray(frame, dtype=np.uint16)
-        self.spectrum_curve.setData(arr)
+        self.spectrum_curve.setData(self._spectrum_x(arr.size), arr)
         y_min = int(arr.min()) if arr.size else 0
         y_max = int(arr.max()) if arr.size else 0
         self._set_readout(arr.size, y_min, y_max)
@@ -320,15 +370,19 @@ class LiveSpectrumPanel(QWidget):
         if self._syncing_roi:
             return
         self._syncing_roi = True
-        self.roi_region.setRegion((self.roi_start.value(), self.roi_end.value()))
+        lo = self._px_to_x(self.roi_start.value())
+        hi = self._px_to_x(self.roi_end.value())
+        self.roi_region.setRegion((min(lo, hi), max(lo, hi)))
         self._syncing_roi = False
 
     def _update_roi_spinboxes_from_region(self) -> None:
         if self._syncing_roi:
             return
         lower, upper = self.roi_region.getRegion()
-        lower_i = max(0, min(int(round(lower)), self._detector_width - 1))
-        upper_i = max(0, min(int(round(upper)), self._detector_width - 1))
+        px_a = self._x_to_px(lower)
+        px_b = self._x_to_px(upper)
+        lower_i = max(0, min(min(px_a, px_b), self._detector_width - 1))
+        upper_i = max(0, min(max(px_a, px_b), self._detector_width - 1))
         self._syncing_roi = True
         self.roi_start.setValue(lower_i)
         self.roi_end.setValue(upper_i)

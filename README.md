@@ -5,6 +5,7 @@ Desktop GUI for the **Andor iDus 420** spectrometer camera. It supports live spe
 ## Main Features
 
 - **Camera Settings**: connect to the mock or Andor backend, control cooling, and apply camera settings.
+- **Spectrometer**: connect to the Andor Shamrock/Kymera spectrograph, choose the grating, and set the central wavelength. The resulting calibration relabels the spectrum plots in nanometers.
 - **Live Spectrum**: view the incoming spectrum, select an ROI, and plot the rolling summed counts from that ROI over time.
 - **Demodulation Alignment**: monitor spectrum, ROI time series, FFT magnitude, and running peak amplitude in real time.
 - **Acquisition**: capture a fixed duration or frame count and save data as `.npz`, `.h5`, `.txt`, or `.sif` when supported.
@@ -14,7 +15,8 @@ Desktop GUI for the **Andor iDus 420** spectrometer camera. It supports live spe
 
 - Python 3.10+
 - PyQt6, NumPy, SciPy, pyqtgraph, h5py
-- For real hardware: Andor SDK v2 with `pyAndorSDK2` available in the Python environment
+- For the real camera: Andor SDK v2 with `pyAndorSDK2` available in the Python environment
+- For the real spectrograph: the Andor Spectrograph SDK with `pyAndorSpectrograph` available in the Python environment
 
 ## Install
 
@@ -53,10 +55,17 @@ Use the **Mock** backend unless the camera and Andor SDK are available on the ma
 - Control cooling and temperature target
 - Set exposure, shutter, gain, and readout parameters
 
+### Spectrometer
+
+- Connect to the **Mock** or **Andor Shamrock** spectrograph
+- Select the installed grating and set the central wavelength
+- Set the detector pixel width (26 µm on the iDus 420) used for the wavelength calibration
+- Applying the settings broadcasts the per-pixel wavelength calibration so the Live and Demodulation spectra plot in nanometers; without a connected spectrograph the plots fall back to pixel index
+
 ### Live Spectrum
 
 - Stream the current spectrum continuously
-- Drag or type an ROI
+- Drag or type an ROI (ROI bounds stay in pixels even when the axis shows nm)
 - Plot the ROI summed counts versus time
 
 ### Demodulation Alignment
