@@ -110,7 +110,9 @@ def test_live_spectrum_worker_emits_roi_samples(qtbot) -> None:  # type: ignore[
     assert len(captured) >= 4
     assert len(frames) >= 4
 
-    for idx, ((elapsed_s, roi_sum), frame) in enumerate(zip(captured[:4], frames[:4])):
+    for idx, ((elapsed_s, roi_sum), frame) in enumerate(
+        zip(captured[:4], frames[:4], strict=False)
+    ):
         expected_sum = float(integrate_roi(frame.reshape(1, -1), 480, 560, "sum")[0])
         assert elapsed_s == pytest.approx(idx / 500.0)
         assert roi_sum == pytest.approx(expected_sum)
