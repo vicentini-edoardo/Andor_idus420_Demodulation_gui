@@ -83,6 +83,11 @@ class ScanPanel(QWidget):
         self._scan_is_line: bool = False
         self._scan_line_coords: np.ndarray | None = None  # nm positions along varying axis
 
+        # Colorbar level handling: track which colorbars the user has manually
+        # adjusted so auto-scaling to data does not clobber their min/max.
+        self._cb_user_levels: set[str] = set()
+        self._suppress_cb_signal: bool = False
+
         self._build_ui()
         self._restore_settings()
 
@@ -327,6 +332,7 @@ class ScanPanel(QWidget):
             plot = self.demod_widget.addPlot(row=0, col=slot_i, title=title)
             theme._style_plot_item(plot)  # noqa: SLF001
             plot.setAspectLocked(True)
+            plot.getViewBox().invertY(True)
             img = pg.ImageItem()
             plot.addItem(img)
             try:
@@ -334,9 +340,11 @@ class ScanPanel(QWidget):
             except Exception:  # noqa: BLE001
                 cb = pg.ColorBarItem(colorMap="viridis", label=label)
             cb.setImageItem(img, insert_in=plot)
+            cb_attr = f"_demod_cb_{slot_i}"
+            cb.sigLevelsChanged.connect(lambda _v, a=cb_attr: self._on_cb_levels_changed(a))
             setattr(self, f"_demod_plot_{slot_i}", plot)
             setattr(self, f"_demod_image_{slot_i}", img)
-            setattr(self, f"_demod_cb_{slot_i}", cb)
+            setattr(self, cb_attr, cb)
         demod_sec_lay.addWidget(self.demod_widget)
         plot_lay.addWidget(self.demod_section, stretch=1)
 
@@ -350,6 +358,7 @@ class ScanPanel(QWidget):
         _avg_plot = self.avg_widget.addPlot(row=0, col=0, title="Average Signal")
         theme._style_plot_item(_avg_plot)  # noqa: SLF001
         _avg_plot.setAspectLocked(True)
+        _avg_plot.getViewBox().invertY(True)
         _avg_img = pg.ImageItem()
         _avg_plot.addItem(_avg_img)
         try:
@@ -357,6 +366,7 @@ class ScanPanel(QWidget):
         except Exception:  # noqa: BLE001
             _avg_cb = pg.ColorBarItem(colorMap="viridis", label="Mean intensity")
         _avg_cb.setImageItem(_avg_img, insert_in=_avg_plot)
+        _avg_cb.sigLevelsChanged.connect(lambda _v: self._on_cb_levels_changed("_avg_cb"))
         self._avg_plot = _avg_plot
         self._avg_image = _avg_img
         self._avg_cb = _avg_cb
@@ -372,6 +382,7 @@ class ScanPanel(QWidget):
             plot = self.snom_widget.addPlot(row=0, col=slot_i, title=title)
             theme._style_plot_item(plot)  # noqa: SLF001
             plot.setAspectLocked(True)
+            plot.getViewBox().invertY(True)
             img = pg.ImageItem()
             plot.addItem(img)
             try:
@@ -379,9 +390,11 @@ class ScanPanel(QWidget):
             except Exception:  # noqa: BLE001
                 cb = pg.ColorBarItem(colorMap="viridis", label=label)
             cb.setImageItem(img, insert_in=plot)
+            cb_attr = f"_snom_cb_{slot_i}"
+            cb.sigLevelsChanged.connect(lambda _v, a=cb_attr: self._on_cb_levels_changed(a))
             setattr(self, f"_snom_plot_{slot_i}", plot)
             setattr(self, f"_snom_image_{slot_i}", img)
-            setattr(self, f"_snom_cb_{slot_i}", cb)
+            setattr(self, cb_attr, cb)
         plot_lay.addWidget(self.snom_widget, stretch=1)
 
         # -- SNOM selector row (below SNOM plots) --
@@ -602,10 +615,13 @@ class ScanPanel(QWidget):
                 cb = getattr(self, attr_cb)
                 cb.hide()
         else:
+            # New scan — reset user-level locks so auto-scaling starts fresh.
+            self._cb_user_levels.clear()
             for attr_plot, attr_img, attr_cb, _attr_line, title, _cmap, _y_label in all_specs:
                 plot = getattr(self, attr_plot)
                 plot.clear()
                 plot.setAspectLocked(True)
+                plot.getViewBox().invertY(True)
                 plot.setTitle(title)
                 img = pg.ImageItem()
                 plot.addItem(img)
@@ -613,7 +629,7 @@ class ScanPanel(QWidget):
                 cb.setImageItem(img, insert_in=plot)
                 cb.show()
                 setattr(self, attr_img, img)
-                img.setImage(np.zeros((ny, nx)).T)
+                img.setImage(np.zeros((ny, nx)).T, autoLevels=False)
 
     # ------------------------------------------------------------------
     # Worker callbacks
@@ -666,7 +682,8 @@ class ScanPanel(QWidget):
             else:
                 img = getattr(self, f"_demod_image_{i}", None)
                 if img is not None:
-                    img.setImage(arr.T)
+                    img.setImage(arr.T, autoLevels=False)
+                    self._autoscale_cb(f"_demod_cb_{i}", arr)
 
     def _render_avg_slot(self) -> None:
         """Repaint the single average signal plot from the stored 0ω map."""
@@ -681,7 +698,8 @@ class ScanPanel(QWidget):
             data = arr[:, 0] if arr.shape[1] == 1 else arr[0, :]
             line.setData(coords, data)
         else:
-            self._avg_image.setImage(arr.T)
+            self._avg_image.setImage(arr.T, autoLevels=False)
+            self._autoscale_cb("_avg_cb", arr)
 
     def _restyle_demod_slots(self) -> None:
         """Update titles, colormaps and colorbar labels for both demod slots."""
@@ -725,7 +743,8 @@ class ScanPanel(QWidget):
             else:
                 img = getattr(self, f"_snom_image_{i}", None)
                 if img is not None:
-                    img.setImage(arr.T)
+                    img.setImage(arr.T, autoLevels=False)
+                    self._autoscale_cb(f"_snom_cb_{i}", arr)
 
     def _restyle_snom_slots(self) -> None:
         """Update titles, colormaps and colorbar labels for both SNOM slots."""
@@ -769,6 +788,29 @@ class ScanPanel(QWidget):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _on_cb_levels_changed(self, cb_attr: str) -> None:
+        """Mark a colorbar as user-adjusted so auto-scaling stops overriding it."""
+        if self._suppress_cb_signal:
+            return
+        self._cb_user_levels.add(cb_attr)
+
+    def _autoscale_cb(self, cb_attr: str, arr: np.ndarray) -> None:
+        """Auto-scale colorbar to valid data range, unless user already set levels."""
+        if cb_attr in self._cb_user_levels:
+            return
+        valid = arr[np.isfinite(arr)]
+        if valid.size == 0:
+            return
+        vmin, vmax = float(valid.min()), float(valid.max())
+        if vmin >= vmax:
+            vmax = vmin + 1.0
+        cb: pg.ColorBarItem = getattr(self, cb_attr)
+        self._suppress_cb_signal = True
+        try:
+            cb.setLevels((vmin, vmax))
+        finally:
+            self._suppress_cb_signal = False
 
     def _show_error(self, msg: str) -> None:
         self.error_banner.setText(msg)
