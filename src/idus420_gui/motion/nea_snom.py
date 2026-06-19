@@ -171,8 +171,9 @@ class NeaSnomBackend(StageBackend):
                     for k in keys:
                         try:
                             temp = float(s.data[k][-1])
-                            win_sum[k] += temp
-                            win_cnt[k] += 1
+                            if temp != 0.0:
+                                win_sum[k] += temp
+                                win_cnt[k] += 1
                         except Exception:  # noqa: BLE001
                             pass
                     time.sleep(0.02)
@@ -249,8 +250,9 @@ class NeaSnomBackend(StageBackend):
                 for k in keys:
                     try:
                         temp = float(s.data[k][-1])
-                        win_sum[k] += temp
-                        win_cnt[k] += 1
+                        if temp != 0.0:
+                            win_sum[k] += temp
+                            win_cnt[k] += 1
                     except Exception:  # noqa: BLE001
                         pass
                 time.sleep(0.02)
