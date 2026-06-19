@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,23 @@ _SNOM_CHANNELS: dict[str, tuple[str, str, str, object]] = {
     "M2A": ("SNOM M2A", "viridis", "Amplitude",   lambda s: s.m_amp[2]),
     "M2P": ("SNOM M2P", "CET-C1",  "Phase (rad)", lambda s: s.m_phase[2]),
 }
+
+
+def _reduce_channel(key: str, values: list[float]) -> float:
+    """Reduce per-frame SNOM samples to a single map value.
+
+    Phase channels (keys ending in ``P``) are angles in radians and must be
+    averaged on the circle — an arithmetic mean is wrong across the ±π wrap
+    (e.g. mean of +179° and −179° should be 180°, not 0°).  All other channels
+    use a plain NaN-aware mean.
+    """
+    arr = np.asarray(values, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return float("nan")
+    if key.endswith("P"):
+        return float(np.angle(np.mean(np.exp(1j * arr))))
+    return float(np.mean(arr))
 
 
 class ScanPanel(QWidget):
@@ -553,10 +571,8 @@ class ScanPanel(QWidget):
             self.worker.stop()
             self.worker.wait(3000)
         if self._stage is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._stage.disconnect()
-            except Exception:  # noqa: BLE001
-                pass
             self._stage = None
         super().closeEvent(event)  # type: ignore[misc]
 
@@ -580,7 +596,10 @@ class ScanPanel(QWidget):
             )
             for i, key in enumerate(self._snom_slot_keys)
         ]
-        avg_specs = [("_avg_plot", "_avg_image", "_avg_cb", "_avg_line", "Average Signal", "viridis", "Mean intensity")]
+        avg_specs = [
+            ("_avg_plot", "_avg_image", "_avg_cb", "_avg_line",
+             "Average Signal", "viridis", "Mean intensity"),
+        ]
         all_specs = demod_specs + snom_specs + avg_specs
 
         if self._scan_is_line:
@@ -657,9 +676,8 @@ class ScanPanel(QWidget):
             )
         if result.snom_samples and self._map_snom is not None:
             for key, (_t, _c, _l, extract) in _SNOM_CHANNELS.items():
-                self._map_snom[key][iy, ix] = float(
-                    np.nanmean([extract(s) for s in result.snom_samples])  # type: ignore[operator]
-                )
+                vals = [float(extract(s)) for s in result.snom_samples]  # type: ignore[operator]
+                self._map_snom[key][iy, ix] = _reduce_channel(key, vals)
         if self.frames_per_point.value() == 1:
             self._render_avg_slot()
         else:
@@ -735,10 +753,7 @@ class ScanPanel(QWidget):
                 if line is None:
                     continue
                 coords = self._scan_line_coords
-                if arr.shape[1] == 1:
-                    data = arr[:, 0]
-                else:
-                    data = arr[0, :]
+                data = arr[:, 0] if arr.shape[1] == 1 else arr[0, :]
                 line.setData(coords, data)
             else:
                 img = getattr(self, f"_snom_image_{i}", None)

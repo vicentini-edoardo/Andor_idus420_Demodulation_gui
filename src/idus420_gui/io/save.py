@@ -26,16 +26,24 @@ def save_run(
     roi_timeseries: np.ndarray,
     demod_results: list[DemodResult],
     metadata: dict[str, Any],
+    frame_times: np.ndarray | None = None,
 ) -> None:
     """Save by extension, supporting `.npz` and `.h5`."""
     target = Path(path)
     if target.suffix == ".npz":
-        save_npz(target, frames, roi_timeseries, demod_results, metadata)
+        save_npz(target, frames, roi_timeseries, demod_results, metadata, frame_times)
         return
     if target.suffix in {".h5", ".hdf5"}:
-        save_h5(target, frames, roi_timeseries, demod_results, metadata)
+        save_h5(target, frames, roi_timeseries, demod_results, metadata, frame_times)
         return
     raise ValueError("Output path must end with .npz, .h5, or .hdf5.")
+
+
+def _frame_times_array(frame_times: np.ndarray | None) -> np.ndarray:
+    """Per-frame acquisition timestamps (s); empty array when not recorded."""
+    if frame_times is None:
+        return np.empty(0, dtype=np.float64)
+    return np.asarray(frame_times, dtype=np.float64)
 
 
 def save_npz(
@@ -44,20 +52,30 @@ def save_npz(
     roi_timeseries: np.ndarray,
     demod_results: list[DemodResult],
     metadata: dict[str, Any],
+    frame_times: np.ndarray | None = None,
 ) -> None:
-    """Save run products in compressed NumPy format."""
+    """Save run products in compressed NumPy format (atomic: .tmp then rename)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     frames_u16 = np.asarray(frames, dtype=np.uint16)
     meta = dict(metadata)
     meta["frames_sha256"] = _frames_sha256(frames_u16)
-    np.savez_compressed(
-        path,
-        frames=frames_u16,
-        roi_timeseries=np.asarray(roi_timeseries, dtype=np.float64),
-        demod_results=_demod_structured(demod_results),
-        metadata=json.dumps(meta, default=str),
-    )
+    # np.savez_compressed appends ".npz" unless the name already ends with it,
+    # so the temp name keeps the suffix to land exactly where we expect.
+    tmp_path = path.parent / (path.name + ".tmp.npz")
+    try:
+        np.savez_compressed(
+            tmp_path,
+            frames=frames_u16,
+            roi_timeseries=np.asarray(roi_timeseries, dtype=np.float64),
+            frame_times_s=_frame_times_array(frame_times),
+            demod_results=_demod_structured(demod_results),
+            metadata=json.dumps(meta, default=str),
+        )
+        tmp_path.replace(path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def save_h5(
@@ -66,6 +84,7 @@ def save_h5(
     roi_timeseries: np.ndarray,
     demod_results: list[DemodResult],
     metadata: dict[str, Any],
+    frame_times: np.ndarray | None = None,
 ) -> None:
     """Save run products in HDF5 format (atomic: writes to .tmp then renames)."""
     path = Path(path)
@@ -78,6 +97,7 @@ def save_h5(
         with h5py.File(tmp_path, "w") as h5:
             h5.create_dataset("frames", data=frames_u16, compression="gzip")
             h5.create_dataset("roi_timeseries", data=np.asarray(roi_timeseries, dtype=np.float64))
+            h5.create_dataset("frame_times_s", data=_frame_times_array(frame_times))
             h5.create_dataset("demod_results", data=_demod_structured(demod_results))
             h5.attrs["metadata"] = json.dumps(meta, default=str)
         tmp_path.replace(path)
@@ -92,12 +112,15 @@ def save_txt(
     roi_timeseries: np.ndarray,
     demod_results: list[DemodResult],
     metadata: dict[str, Any],
+    frame_times: np.ndarray | None = None,
 ) -> None:
     """Tab-separated text export with ``#``-prefixed metadata header.
 
     Sections:
     1. ``# key: value`` metadata lines (one per entry, values JSON-encoded).
-    2. ``# roi_timeseries: frame_index<TAB>roi_value`` + data rows.
+    2. ``# roi_timeseries: frame_index<TAB>[time_s<TAB>]roi_value`` + data rows.
+       The ``time_s`` column is included only when per-frame timestamps were
+       recorded.
     3. ``# demod_results: peak_frequency<TAB>peak_amplitude<TAB>snr`` + data rows.
 
     Raw frames are not embedded — use .npz/.h5 for full frame data.
@@ -111,13 +134,24 @@ def save_txt(
     roi_arr = np.asarray(roi_timeseries, dtype=np.float64)
     n_roi = roi_arr.shape[0]
     indices = np.arange(n_roi, dtype=np.int64)
+    times = _frame_times_array(frame_times)
+    have_times = times.shape[0] == n_roi and n_roi > 0
 
     with path.open("w", encoding="utf-8") as f:
         f.write("# idus420_gui export\n")
         for k, v in meta.items():
             f.write(f"# {k}: {json.dumps(v, default=str)}\n")
-        f.write("# roi_timeseries: frame_index\troi_value\n")
-        np.savetxt(f, np.column_stack([indices, roi_arr]), delimiter="\t", fmt=["%d", "%.10g"])
+        if have_times:
+            f.write("# roi_timeseries: frame_index\ttime_s\troi_value\n")
+            np.savetxt(
+                f,
+                np.column_stack([indices, times, roi_arr]),
+                delimiter="\t",
+                fmt=["%d", "%.10g", "%.10g"],
+            )
+        else:
+            f.write("# roi_timeseries: frame_index\troi_value\n")
+            np.savetxt(f, np.column_stack([indices, roi_arr]), delimiter="\t", fmt=["%d", "%.10g"])
         f.write("# demod_results: peak_frequency\tpeak_amplitude\tsnr\n")
         if demod_results:
             demod_arr = np.array(
@@ -129,7 +163,7 @@ def save_txt(
 
 def save_scan_h5(
     path: str | Path,
-    scan: "ScanResult",
+    scan: ScanResult,
     metadata: dict[str, Any],
 ) -> None:
     """Save a full 2-D raster scan to a single HDF5 file.
@@ -157,7 +191,6 @@ def save_scan_h5(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     grid = scan.grid
-    n_points = len(scan.point_results)
 
     # Build planned coord arrays.
     coords_xy = np.array(

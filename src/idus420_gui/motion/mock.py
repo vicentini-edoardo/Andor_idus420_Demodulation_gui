@@ -61,7 +61,10 @@ class MockStageBackend(StageBackend):
             [decay * 0.5 / (h + 1) + self._rng.normal(0, 0.005) for h in range(_N_HARMONICS)]
         )
         m_phase = np.array(
-            [math.pi * h / (_N_HARMONICS + 1) + self._rng.normal(0, 0.05) for h in range(_N_HARMONICS)]
+            [
+                math.pi * h / (_N_HARMONICS + 1) + self._rng.normal(0, 0.05)
+                for h in range(_N_HARMONICS)
+            ]
         )
         return SnomSample(
             t_s=t_s,

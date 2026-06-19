@@ -33,7 +33,9 @@ def _read_ready_frames(backend: CameraBackend, max_frames: int | None = None) ->
     return frames.copy()
 
 
-def _read_pending_frames(backend: CameraBackend, max_frames: int | None = None) -> np.ndarray | None:
+def _read_pending_frames(
+    backend: CameraBackend, max_frames: int | None = None
+) -> np.ndarray | None:
     """Drain SDK-reported frames after a wait timeout, without unsafe fallback reads."""
     try:
         batch = backend.get_new_frames_batch()

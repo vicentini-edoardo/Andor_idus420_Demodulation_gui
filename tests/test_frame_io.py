@@ -9,7 +9,7 @@ import h5py
 import numpy as np
 import pytest
 
-from idus420_gui.camera.base import AcquisitionStatus, AcquisitionTimings, TriggerMode
+from idus420_gui.camera.base import TriggerMode
 from idus420_gui.camera.mock import MockBackend
 from idus420_gui.workers._frame_io import (
     _MAX_REARM_ATTEMPTS,
@@ -18,7 +18,6 @@ from idus420_gui.workers._frame_io import (
     _rearm_message,
     _timeout_failure_message,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -102,10 +101,10 @@ def test_read_pending_frames_returns_frames_when_available() -> None:
 
 pytest.importorskip("PyQt6")
 
-from idus420_gui.motion.base import ScanGrid
-from idus420_gui.motion.mock import MockStageBackend
-from idus420_gui.workers.acquisition import DemodulationSettings
-from idus420_gui.workers.scan import PointResult, ScanWorker
+from idus420_gui.motion.base import ScanGrid  # noqa: E402
+from idus420_gui.motion.mock import MockStageBackend  # noqa: E402
+from idus420_gui.workers.acquisition import DemodulationSettings  # noqa: E402
+from idus420_gui.workers.scan import PointResult, ScanWorker  # noqa: E402
 
 
 def _make_settings(n_block: int = 4) -> DemodulationSettings:
@@ -147,8 +146,8 @@ def test_scan_worker_handles_initial_timeouts(qtbot) -> None:
 # Atomic HDF5 save tests
 # ---------------------------------------------------------------------------
 
-from idus420_gui.io.save import save_h5, save_scan_h5
-from idus420_gui.workers.scan import ScanResult
+from idus420_gui.io.save import save_h5, save_scan_h5  # noqa: E402
+from idus420_gui.workers.scan import ScanResult  # noqa: E402
 
 
 def test_save_h5_produces_valid_file() -> None:
@@ -174,7 +173,7 @@ def test_save_h5_cleans_up_tmp_on_error() -> None:
         # passing data that cannot be written.
         path.parent.mkdir(parents=True)
         tmp_path = path.parent / (path.name + ".tmp")
-        with pytest.raises(Exception):
+        with pytest.raises((ValueError, TypeError, AttributeError)):
             save_h5(path, "not_an_array", np.array([]), [], {})  # type: ignore[arg-type]
         assert not tmp_path.exists()
 

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-import time
 
 import numpy as np
 

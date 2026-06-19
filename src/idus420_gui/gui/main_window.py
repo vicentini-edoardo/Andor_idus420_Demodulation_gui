@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer, QThread, pyqtSignal
+from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QLabel,
@@ -23,7 +23,6 @@ from idus420_gui.gui.panel_demod import DemodPanel
 from idus420_gui.gui.panel_live import LiveSpectrumPanel
 from idus420_gui.gui.panel_scan import ScanPanel
 from idus420_gui.gui.widgets import LogView
-
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -75,12 +74,17 @@ class MainWindow(QMainWindow):
         self.acquisition_label.setObjectName("acquisition_label")
         self.acquisition_label.setProperty("running", "false")
         self.log_view = LogView()
-        self._update_btn = QPushButton("Update")
-        self._update_btn.setToolTip("git pull and restart")
-        self._update_btn.clicked.connect(self._update_app)
         self._pull_worker: _GitPullWorker | None = None
         self.statusBar().addWidget(self.connection_label)
-        self.statusBar().addPermanentWidget(self._update_btn)
+        # The Update button does `git pull` + restart, which only makes sense
+        # when the app runs from a source checkout; hide it for installed copies.
+        if (_REPO_ROOT / ".git").exists():
+            self._update_btn = QPushButton("Update")
+            self._update_btn.setToolTip("git pull and restart")
+            self._update_btn.clicked.connect(self._update_app)
+            self.statusBar().addPermanentWidget(self._update_btn)
+        else:
+            self._update_btn = None
         self.statusBar().addPermanentWidget(self.temperature_label)
         self.statusBar().addPermanentWidget(self.acquisition_label)
         self.log_view.setWindowTitle("Log")
@@ -121,6 +125,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message, 5000)
         self.log_view.append_line(message)
         if message.lower().startswith(("connection failed", "no triggers", "save")):
+            return
+        # A modal dialog would block the GUI thread; during a run, workers can
+        # emit transient errors (e.g. re-arm notices), so surface them only in
+        # the status bar / log and skip the interrupting popup.
+        if self.acquisition_running:
             return
         if "failed" in message.lower() or "error" in message.lower():
             QMessageBox.warning(self, "Camera Error", message)
@@ -167,7 +176,8 @@ class MainWindow(QMainWindow):
         self._update_tab_state()
 
     def _poll_status(self) -> None:
-        self.camera_panel.poll_temperature()
+        # Temperature is polled separately on its own 5 s timer to limit SDK
+        # contention; this 1 Hz status poll only refreshes acquisition state.
         if self.backend and self.backend.is_connected():
             self.acquisition_label.setText(self.backend.status().value)
         else:
@@ -179,9 +189,14 @@ class MainWindow(QMainWindow):
         self.tabs.setTabEnabled(1, enabled or self.acquisition_running)
         self.tabs.setTabEnabled(2, enabled or self.acquisition_running)
         self.tabs.setTabEnabled(3, enabled or self.acquisition_running)
-        self.tabs.setTabEnabled(4, enabled or self.acquisition_running)
+        # Scan tab is always accessible so parameters can be edited before a
+        # camera is connected; ScanPanel.start() guards against missing
+        # camera/stage backends itself.
+        self.tabs.setTabEnabled(4, True)
 
     def _update_app(self) -> None:
+        if self._update_btn is None:
+            return
         self._update_btn.setEnabled(False)
         self._update_btn.setText("Updating…")
         self._pull_worker = _GitPullWorker()
@@ -189,8 +204,9 @@ class MainWindow(QMainWindow):
         self._pull_worker.start()
 
     def _on_pull_done(self, returncode: int, output: str) -> None:
-        self._update_btn.setEnabled(True)
-        self._update_btn.setText("Update")
+        if self._update_btn is not None:
+            self._update_btn.setEnabled(True)
+            self._update_btn.setText("Update")
         msg = QMessageBox(self)
         msg.setWindowTitle("Update")
         msg.setText(output.strip() or "(no output)")

@@ -13,7 +13,7 @@ Desktop GUI for the **Andor iDus 420** spectrometer camera. Supports live spectr
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 - PyQt6, NumPy, SciPy, pyqtgraph, h5py
 - For real camera hardware: Andor SDK v2 with `pyAndorSDK2` available in the Python environment
 - For SNOM scanning: `nea_tools` and `nest_asyncio` (see Install below)

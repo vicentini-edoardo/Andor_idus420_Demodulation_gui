@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QSettings, Qt, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -25,6 +26,23 @@ from idus420_gui.gui.widgets import ReadoutLabel
 from idus420_gui.workers.acquisition import DemodulationSettings, DemodulationWorker
 
 _SETTINGS_KEY_PREFIX = "demod_panel"
+
+# Cap the number of points handed to pyqtgraph per curve.  ``n_block`` may be
+# up to a million samples; plotting that 20×/s makes the UI crawl.  Peak
+# detection still runs at full resolution in the worker — only the displayed
+# curve is decimated.
+_MAX_PLOT_POINTS = 4000
+
+
+def _decimate(y: np.ndarray, x: np.ndarray | None = None):
+    """Return (x, y) thinned to at most ``_MAX_PLOT_POINTS`` points for display."""
+    y = np.asarray(y)
+    n = y.shape[0]
+    if n <= _MAX_PLOT_POINTS:
+        return (None if x is None else np.asarray(x)), y
+    stride = int(np.ceil(n / _MAX_PLOT_POINTS))
+    idx = np.arange(0, n, stride)
+    return (None if x is None else np.asarray(x)[idx]), y[idx]
 
 
 class DemodPanel(QWidget):
@@ -251,7 +269,7 @@ class DemodPanel(QWidget):
         self.peak_history.clear()
         self.worker = DemodulationWorker(self.backend, self.settings(), continuous=True)
         self.worker.frame_acquired.connect(lambda frame: self.spectrum_curve.setData(frame))
-        self.worker.block_complete.connect(lambda ts: self.time_curve.setData(ts))
+        self.worker.block_complete.connect(self._handle_block)
         self.worker.demod_result.connect(self._handle_result)
         self.worker.error.connect(self.log_message.emit)
         self.worker.worker_finished.connect(lambda: self._set_running_ui(False))
@@ -289,8 +307,16 @@ class DemodPanel(QWidget):
             return False
         return True
 
+    def _handle_block(self, ts: object) -> None:
+        x, y = _decimate(ts)  # type: ignore[arg-type]
+        if x is None:
+            self.time_curve.setData(y)
+        else:
+            self.time_curve.setData(x, y)
+
     def _handle_result(self, result: object) -> None:
-        self.fft_curve.setData(result.f_axis, result.spectrum)  # type: ignore[attr-defined]
+        fx, fy = _decimate(result.spectrum, result.f_axis)  # type: ignore[attr-defined]
+        self.fft_curve.setData(fx, fy)
         self.fft_peak_line.setPos(float(result.peak_frequency))  # type: ignore[attr-defined]
         self.peak_history.append(float(result.peak_amplitude))  # type: ignore[attr-defined]
         self.peak_history = self.peak_history[-600:]
