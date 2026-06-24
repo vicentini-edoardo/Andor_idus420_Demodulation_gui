@@ -389,7 +389,7 @@ class LiveSpectrumWorker(QThread):
     """Continuously streams frames for a large live-spectrum view."""
 
     frame_acquired = pyqtSignal(object)
-    roi_sample = pyqtSignal(float, float)
+    roi_sample = pyqtSignal(float, float, float)
     error = pyqtSignal(str)
     worker_finished = pyqtSignal()
 
@@ -401,6 +401,8 @@ class LiveSpectrumWorker(QThread):
         pixel_start: int,
         pixel_end: int,
         burst_frames: int = 64,
+        pixel_start2: int = 0,
+        pixel_end2: int = 0,
         parent: object | None = None,
     ) -> None:
         super().__init__(parent)
@@ -409,6 +411,8 @@ class LiveSpectrumWorker(QThread):
         self.trigger_frequency_hz = float(trigger_frequency_hz)
         self.pixel_start = int(pixel_start)
         self.pixel_end = int(pixel_end)
+        self.pixel_start2 = int(pixel_start2)
+        self.pixel_end2 = int(pixel_end2)
         self.burst_frames = int(max(4, burst_frames))
         self._running = True
 
@@ -492,16 +496,25 @@ class LiveSpectrumWorker(QThread):
                     for frame in ready:
                         acquired += 1
                         self.frame_acquired.emit(frame.copy())
+                        frame_row = frame.reshape(1, -1)
                         roi_sum = float(
                             integrate_roi(
-                                frame.reshape(1, -1),
+                                frame_row,
                                 self.pixel_start,
                                 self.pixel_end,
                                 "sum",
                             )[0]
                         )
+                        roi_sum2 = float(
+                            integrate_roi(
+                                frame_row,
+                                self.pixel_start2,
+                                self.pixel_end2,
+                                "sum",
+                            )[0]
+                        )
                         elapsed_s = sample_index / max(self.trigger_frequency_hz, 1e-6)
-                        self.roi_sample.emit(elapsed_s, roi_sum)
+                        self.roi_sample.emit(elapsed_s, roi_sum, roi_sum2)
                         sample_index += 1
         except Exception as exc:  # noqa: BLE001 - worker must report and exit cleanly.
             LOG.exception("LiveSpectrumWorker error")

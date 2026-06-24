@@ -41,9 +41,12 @@ class LiveSpectrumPanel(QWidget):
         self.worker: LiveSpectrumWorker | None = None
         self._detector_width = 100_000
         self._syncing_roi = False
+        self._syncing_roi2 = False
         self._history_t: deque[float] = deque()
         self._history_roi: deque[float] = deque()
+        self._history_roi2: deque[float] = deque()
         self._last_roi_sum: float | None = None
+        self._last_roi_sum2: float | None = None
         self._build_ui()
         self._restore_settings()
 
@@ -55,11 +58,12 @@ class LiveSpectrumPanel(QWidget):
 
     def set_frame_width(self, width: int) -> None:
         self._detector_width = max(1, int(width))
-        self.roi_start.setMaximum(self._detector_width - 1)
-        self.roi_end.setMaximum(self._detector_width - 1)
-        self.roi_start.setValue(min(self.roi_start.value(), self._detector_width - 1))
-        self.roi_end.setValue(min(self.roi_end.value(), self._detector_width - 1))
+        for spin in (self.roi_start, self.roi_end, self.roi_start2, self.roi_end2):
+            spin.setMaximum(self._detector_width - 1)
+        for spin in (self.roi_start, self.roi_end, self.roi_start2, self.roi_end2):
+            spin.setValue(min(spin.value(), self._detector_width - 1))
         self._update_roi_region()
+        self._update_roi_region2()
 
     def set_exposure(self, value: float) -> None:
         self.exposure_spin.setValue(value)
@@ -108,6 +112,14 @@ class LiveSpectrumPanel(QWidget):
         self.roi_end.setRange(0, 100_000)
         self.roi_end.setValue(560)
 
+        self.roi_start2 = QSpinBox()
+        self.roi_start2.setRange(0, 100_000)
+        self.roi_start2.setValue(600)
+
+        self.roi_end2 = QSpinBox()
+        self.roi_end2.setRange(0, 100_000)
+        self.roi_end2.setValue(680)
+
         self.history_points_spin = QSpinBox()
         self.history_points_spin.setRange(10, 100_000)
         self.history_points_spin.setValue(1000)
@@ -127,11 +139,17 @@ class LiveSpectrumPanel(QWidget):
         grid.addWidget(_lbl("Frames / burst"), row, 0)
         grid.addWidget(self.burst_spin, row, 1)
         row += 1
-        grid.addWidget(_lbl("ROI start (px)"), row, 0)
+        grid.addWidget(_lbl("ROI1 start (px)"), row, 0)
         grid.addWidget(self.roi_start, row, 1)
         row += 1
-        grid.addWidget(_lbl("ROI end (px)"), row, 0)
+        grid.addWidget(_lbl("ROI1 end (px)"), row, 0)
         grid.addWidget(self.roi_end, row, 1)
+        row += 1
+        grid.addWidget(_lbl("ROI2 start (px)"), row, 0)
+        grid.addWidget(self.roi_start2, row, 1)
+        row += 1
+        grid.addWidget(_lbl("ROI2 end (px)"), row, 0)
+        grid.addWidget(self.roi_end2, row, 1)
         row += 1
         grid.addWidget(_lbl("History max points"), row, 0)
         grid.addWidget(self.history_points_spin, row, 1)
@@ -173,8 +191,34 @@ class LiveSpectrumPanel(QWidget):
             pen=pg.mkPen(theme.CURVE_CYAN, width=1.8)
         )
         self.history_plot.setLabel("bottom", "Time (s)")
-        self.history_plot.setLabel("left", "ROI sum (counts)")
+        self.history_plot.setLabel("left", "ROI1 sum (counts)", color=theme.CURVE_CYAN)
 
+        # --- twin right-axis for ROI2 ---
+        self.history_plot.showAxis("right")
+        self.history_vb2 = pg.ViewBox()
+        self.history_plot.scene().addItem(self.history_vb2)
+        self.history_plot.getAxis("right").linkToView(self.history_vb2)
+        self.history_vb2.setXLink(self.history_plot)
+        self.history_curve2 = pg.PlotCurveItem(
+            pen=pg.mkPen(theme.CURVE_MAGENTA, width=1.8)
+        )
+        self.history_vb2.addItem(self.history_curve2)
+        self.history_plot.getAxis("right").setLabel(
+            "ROI2 sum (counts)", color=theme.CURVE_MAGENTA
+        )
+
+        def _sync_history_vb2() -> None:
+            self.history_vb2.setGeometry(self.history_plot.vb.sceneBoundingRect())
+            self.history_vb2.linkedViewChanged(
+                self.history_plot.vb, self.history_vb2.XAxis
+            )
+
+        self._sync_history_vb2 = _sync_history_vb2
+        self.history_plot.vb.sigResized.connect(_sync_history_vb2)
+        # initial sync so geometry is correct before first resize event
+        _sync_history_vb2()
+
+        # --- ROI1 overlay (cyan-tinted) ---
         roi_color = QColor(theme.ACCENT)
         roi_color.setAlpha(40)
         self.roi_region = pg.LinearRegionItem(
@@ -184,6 +228,17 @@ class LiveSpectrumPanel(QWidget):
             pen=pg.mkPen(theme.ACCENT, width=1),
         )
         self.spectrum_plot.addItem(self.roi_region)
+
+        # --- ROI2 overlay (magenta-tinted) ---
+        roi_color2 = QColor(theme.CURVE_MAGENTA)
+        roi_color2.setAlpha(40)
+        self.roi_region2 = pg.LinearRegionItem(
+            values=(self.roi_start2.value(), self.roi_end2.value()),
+            movable=True,
+            brush=pg.mkBrush(roi_color2),
+            pen=pg.mkPen(theme.CURVE_MAGENTA, width=1),
+        )
+        self.spectrum_plot.addItem(self.roi_region2)
 
         splitter.addWidget(self.plot_widget)
         splitter.setStretchFactor(0, 0)
@@ -198,6 +253,9 @@ class LiveSpectrumPanel(QWidget):
         self.roi_start.valueChanged.connect(self._update_roi_region)
         self.roi_end.valueChanged.connect(self._update_roi_region)
         self.roi_region.sigRegionChanged.connect(self._update_roi_spinboxes_from_region)
+        self.roi_start2.valueChanged.connect(self._update_roi_region2)
+        self.roi_end2.valueChanged.connect(self._update_roi_region2)
+        self.roi_region2.sigRegionChanged.connect(self._update_roi_spinboxes_from_region2)
         self.history_points_spin.valueChanged.connect(self._trim_history)
 
     def start(self) -> None:
@@ -208,8 +266,11 @@ class LiveSpectrumPanel(QWidget):
             return
         self._history_t.clear()
         self._history_roi.clear()
+        self._history_roi2.clear()
         self._last_roi_sum = None
+        self._last_roi_sum2 = None
         self.history_curve.clear()
+        self.history_curve2.clear()
         self.history_plot.enableAutoRange()
         self.history_plot.autoRange()
         self.worker = LiveSpectrumWorker(
@@ -219,6 +280,8 @@ class LiveSpectrumPanel(QWidget):
             self.roi_start.value(),
             self.roi_end.value(),
             self.burst_spin.value(),
+            self.roi_start2.value(),
+            self.roi_end2.value(),
         )
         self.worker.frame_acquired.connect(self._update_frame)
         self.worker.roi_sample.connect(self._update_roi_history)
@@ -239,10 +302,12 @@ class LiveSpectrumPanel(QWidget):
         y_max = int(arr.max()) if arr.size else 0
         self._set_readout(arr.size, y_min, y_max)
 
-    def _update_roi_history(self, elapsed_s: float, roi_sum: float) -> None:
+    def _update_roi_history(self, elapsed_s: float, roi_sum: float, roi_sum2: float) -> None:
         self._last_roi_sum = roi_sum
+        self._last_roi_sum2 = roi_sum2
         self._history_t.append(float(elapsed_s))
         self._history_roi.append(float(roi_sum))
+        self._history_roi2.append(float(roi_sum2))
         self._trim_history()
         spectrum_data = self.spectrum_curve.getData()[1]
         if spectrum_data is None:
@@ -257,16 +322,22 @@ class LiveSpectrumPanel(QWidget):
             self._history_t.popleft()
         while len(self._history_roi) > limit:
             self._history_roi.popleft()
+        while len(self._history_roi2) > limit:
+            self._history_roi2.popleft()
         if self._history_t and self._history_roi:
             self._refresh_history_curve()
 
     def _refresh_history_curve(self) -> None:
         t = np.asarray(self._history_t, dtype=np.float64)
         roi = np.asarray(self._history_roi, dtype=np.float64)
+        roi2 = np.asarray(self._history_roi2, dtype=np.float64)
         self.history_curve.setData(t, roi)
-        self._update_history_view(t, roi)
+        self.history_curve2.setData(t, roi2)
+        self._update_history_view(t, roi, roi2)
 
-    def _update_history_view(self, t: np.ndarray, roi: np.ndarray) -> None:
+    def _update_history_view(
+        self, t: np.ndarray, roi: np.ndarray, roi2: np.ndarray
+    ) -> None:
         if t.size == 0 or roi.size == 0:
             return
         if t.size == 1:
@@ -277,34 +348,52 @@ class LiveSpectrumPanel(QWidget):
             x1 = float(t[-1])
             if x1 <= x0:
                 x1 = x0 + 1e-6
-        y0 = float(np.min(roi))
-        y1 = float(np.max(roi))
-        if y1 <= y0:
-            pad = max(abs(y0) * 0.05, 1.0)
-            y0 -= pad
-            y1 += pad
-        else:
+
+        def _y_range(arr: np.ndarray) -> tuple[float, float]:
+            y0 = float(np.min(arr))
+            y1 = float(np.max(arr))
+            if y1 <= y0:
+                pad = max(abs(y0) * 0.05, 1.0)
+                return y0 - pad, y1 + pad
             pad = (y1 - y0) * 0.08
-            y0 -= pad
-            y1 += pad
+            return y0 - pad, y1 + pad
+
         self.history_plot.setXRange(x0, x1, padding=0.0)
+        y0, y1 = _y_range(roi)
         self.history_plot.setYRange(y0, y1, padding=0.0)
+        if roi2.size > 0:
+            y0_2, y1_2 = _y_range(roi2)
+            self.history_vb2.setYRange(y0_2, y1_2, padding=0.0)
+        # keep right ViewBox geometry in sync
+        self._sync_history_vb2()
 
     def _set_readout(self, n_px: int, y_min: int, y_max: int) -> None:
         roi_text = f"{self._last_roi_sum:.0f}" if self._last_roi_sum is not None else "--"
+        roi2_text = f"{self._last_roi_sum2:.0f}" if self._last_roi_sum2 is not None else "--"
         self.readout.setText(
-            f"Spectrum: {n_px} px | min {y_min} | max {y_max} | ROI sum: {roi_text}"
+            f"Spectrum: {n_px} px | min {y_min} | max {y_max}"
+            f" | ROI1 sum: {roi_text} | ROI2 sum: {roi2_text}"
         )
 
     def _validate_roi(self) -> bool:
         start = self.roi_start.value()
         end = self.roi_end.value()
         if start > end:
-            self.log_message.emit("ROI start must be ≤ ROI end.")
+            self.log_message.emit("ROI1 start must be ≤ ROI1 end.")
             return False
         if end >= self._detector_width:
             self.log_message.emit(
-                f"ROI end {end} exceeds detector width {self._detector_width}."
+                f"ROI1 end {end} exceeds detector width {self._detector_width}."
+            )
+            return False
+        start2 = self.roi_start2.value()
+        end2 = self.roi_end2.value()
+        if start2 > end2:
+            self.log_message.emit("ROI2 start must be ≤ ROI2 end.")
+            return False
+        if end2 >= self._detector_width:
+            self.log_message.emit(
+                f"ROI2 end {end2} exceeds detector width {self._detector_width}."
             )
             return False
         return True
@@ -328,11 +417,32 @@ class LiveSpectrumPanel(QWidget):
         self._syncing_roi = False
         self._update_roi_region()
 
+    def _update_roi_region2(self) -> None:
+        if self._syncing_roi2:
+            return
+        self._syncing_roi2 = True
+        self.roi_region2.setRegion((self.roi_start2.value(), self.roi_end2.value()))
+        self._syncing_roi2 = False
+
+    def _update_roi_spinboxes_from_region2(self) -> None:
+        if self._syncing_roi2:
+            return
+        lower, upper = self.roi_region2.getRegion()
+        lower_i = max(0, min(int(round(lower)), self._detector_width - 1))
+        upper_i = max(0, min(int(round(upper)), self._detector_width - 1))
+        self._syncing_roi2 = True
+        self.roi_start2.setValue(lower_i)
+        self.roi_end2.setValue(upper_i)
+        self._syncing_roi2 = False
+        self._update_roi_region2()
+
     def _auto_range(self) -> None:
         self.spectrum_plot.enableAutoRange()
         self.spectrum_plot.autoRange()
         self.history_plot.enableAutoRange()
         self.history_plot.autoRange()
+        self.history_vb2.enableAutoRange(axis=pg.ViewBox.YAxis)
+        self.history_vb2.autoRange()
 
     def _set_running_ui(self, running: bool) -> None:
         for widget in [
@@ -341,6 +451,8 @@ class LiveSpectrumPanel(QWidget):
             self.burst_spin,
             self.roi_start,
             self.roi_end,
+            self.roi_start2,
+            self.roi_end2,
             self.history_points_spin,
             self.start_button,
         ]:
@@ -348,6 +460,7 @@ class LiveSpectrumPanel(QWidget):
         self.stop_button.setEnabled(running)
         self.autorange_button.setEnabled(True)
         self.roi_region.setMovable(not running)
+        self.roi_region2.setMovable(not running)
         if not running:
             self._save_settings()
         self.running_changed.emit(running)
@@ -359,6 +472,8 @@ class LiveSpectrumPanel(QWidget):
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/burst_frames", self.burst_spin.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_start", self.roi_start.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_end", self.roi_end.value())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_start2", self.roi_start2.value())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_end2", self.roi_end2.value())
         s.setValue(
             f"{_SETTINGS_KEY_PREFIX}/history_max_points",
             self.history_points_spin.value(),
@@ -380,8 +495,11 @@ class LiveSpectrumPanel(QWidget):
         self.burst_spin.setValue(ival("burst_frames", 64))
         self.roi_start.setValue(ival("roi_start", 480))
         self.roi_end.setValue(ival("roi_end", 560))
+        self.roi_start2.setValue(ival("roi_start2", 600))
+        self.roi_end2.setValue(ival("roi_end2", 680))
         self.history_points_spin.setValue(ival("history_max_points", 1000))
         self._update_roi_region()
+        self._update_roi_region2()
 
 
 def _lbl(text: str) -> QLabel:
