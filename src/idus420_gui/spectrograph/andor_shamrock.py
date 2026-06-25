@@ -44,7 +44,7 @@ class AndorShamrockBackend(SpectroBackend):
         ret_code = ret[0] if isinstance(ret, (tuple, list)) else int(ret)
         _check(ret_code, "Initialize")
         self._spc = spc
-        ret, n = spc.GetNumberGratings(0)
+        ret, n = spc.GetNumberGratings(0, 64)
         _check(ret, "GetNumberGratings")
         self._n_gratings = int(n)
         self._connected = True
@@ -65,7 +65,7 @@ class AndorShamrockBackend(SpectroBackend):
             raise SpectroError("Not connected.")
         gratings: list[GratingInfo] = []
         for i in range(1, self._n_gratings + 1):
-            ret, lines, blaze, home, offset = self._spc.GetGratingInfo(0, i)  # type: ignore[attr-defined]
+            ret, lines, blaze, home, offset = self._spc.GetGratingInfo(0, i, 64)  # type: ignore[attr-defined]
             _check(ret, f"GetGratingInfo({i})")
             gratings.append(GratingInfo(index=i, lines_per_mm=float(lines), blaze=str(blaze)))
         return gratings
