@@ -29,7 +29,7 @@ def test_live_panel_rejects_invalid_roi(qtbot) -> None:  # type: ignore[no-untyp
     panel.log_message.connect(messages.append)
 
     assert panel._validate_roi() is False  # noqa: SLF001 - deliberate GUI validation test
-    assert messages == ["ROI start must be ≤ ROI end."]
+    assert messages == ["ROI1 start must be ≤ ROI1 end."]
 
 
 def test_live_panel_clamps_roi_to_detector_width(qtbot) -> None:  # type: ignore[no-untyped-def]

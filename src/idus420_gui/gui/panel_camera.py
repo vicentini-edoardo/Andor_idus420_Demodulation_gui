@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 from PyQt6.QtCore import QSettings, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -30,6 +31,12 @@ from idus420_gui.camera.base import (
 )
 from idus420_gui.camera.mock import MockBackend
 from idus420_gui.gui.widgets import StatusLed
+from idus420_gui.spectrograph import (
+    AndorShamrockBackend,
+    MockSpectroBackend,
+    SpectroBackend,
+    SpectroError,
+)
 
 _SETTINGS_KEY_PREFIX = "camera_panel"
 
@@ -43,10 +50,14 @@ class CameraPanel(QWidget):
     log_message = pyqtSignal(str)
     exposure_changed = pyqtSignal(float)
     frame_geometry_changed = pyqtSignal(int)
+    # Emits calibrated wavelength axis (np.ndarray) when available, or None to
+    # revert downstream plots to pixel index.
+    wavelength_axis_changed = pyqtSignal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.backend: CameraBackend | None = None
+        self.spectro_backend: SpectroBackend | None = None
         self._pending_changes = False
         self._build_ui()
         self._restore_settings()
@@ -240,6 +251,86 @@ class CameraPanel(QWidget):
 
         outer.addLayout(right_col, stretch=1)
 
+        # --- Spectrograph column ---
+        spectro_box = QGroupBox("Spectrograph")
+        sg = QGridLayout(spectro_box)
+        sg.setSpacing(6)
+        sg.setColumnStretch(1, 1)
+
+        self.spectro_backend_combo = QComboBox()
+        self.spectro_backend_combo.addItems(["Mock", "Andor Shamrock"])
+        self.spectro_connect_button = QPushButton("Connect")
+        self.spectro_disconnect_button = QPushButton("Disconnect")
+        self.spectro_disconnect_button.setEnabled(False)
+        self.spectro_info_label = QLabel("Not connected")
+        self.spectro_info_label.setWordWrap(True)
+
+        self.spectro_grating_combo = QComboBox()
+        self.spectro_grating_combo.setEnabled(False)
+
+        self.spectro_wl_spin = QDoubleSpinBox()
+        self.spectro_wl_spin.setRange(0.0, 9999.0)
+        self.spectro_wl_spin.setDecimals(1)
+        self.spectro_wl_spin.setValue(600.0)
+        self.spectro_wl_spin.setSuffix(" nm")
+        self.spectro_wl_spin.setEnabled(False)
+        self.spectro_set_wl_button = QPushButton("Set WL")
+        self.spectro_set_wl_button.setEnabled(False)
+
+        self.spectro_range_label = QLabel("--")
+
+        self.spectro_pixel_width_spin = QDoubleSpinBox()
+        self.spectro_pixel_width_spin.setRange(0.1, 999.0)
+        self.spectro_pixel_width_spin.setDecimals(1)
+        self.spectro_pixel_width_spin.setValue(26.0)
+        self.spectro_pixel_width_spin.setSuffix(" µm")
+        self.spectro_pixel_width_spin.setToolTip(
+            "Physical pixel pitch of the detector (iDus 420 = 26 µm)."
+        )
+
+        self.spectro_calibrate_button = QPushButton("Get Calibration")
+        self.spectro_calibrate_button.setEnabled(False)
+        self.spectro_cal_label = QLabel("--")
+        self.spectro_cal_label.setWordWrap(True)
+
+        row = 0
+        sg.addWidget(QLabel("Backend"), row, 0)
+        sg.addWidget(self.spectro_backend_combo, row, 1)
+        row += 1
+        conn_btns = QHBoxLayout()
+        conn_btns.addWidget(self.spectro_connect_button)
+        conn_btns.addWidget(self.spectro_disconnect_button)
+        sg.addLayout(conn_btns, row, 0, 1, 2)
+        row += 1
+        sg.addWidget(QLabel("Status"), row, 0)
+        sg.addWidget(self.spectro_info_label, row, 1)
+        row += 1
+        sg.addWidget(QLabel("Grating"), row, 0)
+        sg.addWidget(self.spectro_grating_combo, row, 1)
+        row += 1
+        sg.addWidget(QLabel("Centre WL"), row, 0)
+        wl_row = QHBoxLayout()
+        wl_row.addWidget(self.spectro_wl_spin)
+        wl_row.addWidget(self.spectro_set_wl_button)
+        sg.addLayout(wl_row, row, 1)
+        row += 1
+        sg.addWidget(QLabel("Range"), row, 0)
+        sg.addWidget(self.spectro_range_label, row, 1)
+        row += 1
+        sg.addWidget(QLabel("Pixel width"), row, 0)
+        sg.addWidget(self.spectro_pixel_width_spin, row, 1)
+        row += 1
+        sg.addWidget(self.spectro_calibrate_button, row, 0, 1, 2)
+        row += 1
+        sg.addWidget(QLabel("Calibration"), row, 0)
+        sg.addWidget(self.spectro_cal_label, row, 1)
+
+        spectro_col = QVBoxLayout()
+        spectro_col.setSpacing(10)
+        spectro_col.addWidget(spectro_box)
+        spectro_col.addStretch(1)
+        outer.addLayout(spectro_col)
+
         # --- Signals ---
         self.connect_button.clicked.connect(self._connect_backend)
         self.disconnect_button.clicked.connect(self._disconnect_backend)
@@ -266,6 +357,12 @@ class CameraPanel(QWidget):
         self._on_crop_changed()
         self._update_hbin_limits()
         self._set_config_enabled(False)
+
+        self.spectro_connect_button.clicked.connect(self._spectro_connect)
+        self.spectro_disconnect_button.clicked.connect(self._spectro_disconnect)
+        self.spectro_grating_combo.currentIndexChanged.connect(self._spectro_grating_changed)
+        self.spectro_set_wl_button.clicked.connect(self._spectro_set_wavelength)
+        self.spectro_calibrate_button.clicked.connect(self._spectro_get_calibration)
 
     # ------------------------------------------------------------------
     # Public interface
@@ -428,6 +525,132 @@ class CameraPanel(QWidget):
             self.poll_temperature()
             self.log_message.emit("Cooler disabled.")
         except CameraError as exc:
+            self.log_message.emit(str(exc))
+
+    # ------------------------------------------------------------------
+    # Spectrograph
+    # ------------------------------------------------------------------
+
+    def _spectro_connect(self) -> None:
+        try:
+            spc: SpectroBackend = (
+                AndorShamrockBackend()
+                if self.spectro_backend_combo.currentText() == "Andor Shamrock"
+                else MockSpectroBackend()
+            )
+            spc.connect()
+            self.spectro_backend = spc
+            gratings = spc.list_gratings()
+            self.spectro_grating_combo.blockSignals(True)
+            self.spectro_grating_combo.clear()
+            for g in gratings:
+                label = f"{g.index}: {g.lines_per_mm:.0f} l/mm  blaze {g.blaze}"
+                self.spectro_grating_combo.addItem(label, userData=g.index)
+            current = spc.get_grating()
+            self.spectro_grating_combo.setCurrentIndex(current - 1)
+            self.spectro_grating_combo.blockSignals(False)
+            wl = spc.get_wavelength()
+            self.spectro_wl_spin.setValue(wl)
+            self._spectro_update_range()
+            self.spectro_info_label.setText("Connected")
+            self._spectro_set_enabled(True)
+            self.spectro_connect_button.setEnabled(False)
+            self.spectro_disconnect_button.setEnabled(True)
+            self.spectro_backend_combo.setEnabled(False)
+            self.log_message.emit("Spectrograph connected.")
+        except (SpectroError, Exception) as exc:  # noqa: BLE001
+            self.log_message.emit(f"Spectrograph connection failed: {exc}")
+            self.spectro_backend = None
+
+    def _spectro_disconnect(self) -> None:
+        if self.spectro_backend:
+            try:
+                self.spectro_backend.disconnect()
+            except SpectroError as exc:
+                self.log_message.emit(str(exc))
+        self.spectro_backend = None
+        self.spectro_info_label.setText("Not connected")
+        self.spectro_range_label.setText("--")
+        self.spectro_cal_label.setText("--")
+        self.spectro_grating_combo.clear()
+        self._spectro_set_enabled(False)
+        self.spectro_connect_button.setEnabled(True)
+        self.spectro_disconnect_button.setEnabled(False)
+        self.spectro_backend_combo.setEnabled(True)
+        self.wavelength_axis_changed.emit(None)
+        self.log_message.emit("Spectrograph disconnected.")
+
+    def _spectro_set_enabled(self, enabled: bool) -> None:
+        for w in [
+            self.spectro_grating_combo,
+            self.spectro_wl_spin,
+            self.spectro_set_wl_button,
+            self.spectro_calibrate_button,
+        ]:
+            w.setEnabled(enabled)
+
+    def _spectro_grating_changed(self, _index: int) -> None:
+        if not self.spectro_backend:
+            return
+        idx = self.spectro_grating_combo.currentData()
+        if idx is None:
+            return
+        try:
+            self.spectro_backend.set_grating(int(idx))
+            wl = self.spectro_backend.get_wavelength()
+            self.spectro_wl_spin.setValue(wl)
+            self._spectro_update_range()
+            self.log_message.emit(f"Grating set to slot {idx}.")
+            # Re-calibrate automatically if a calibration was already active.
+            if self.spectro_cal_label.text() != "--":
+                self._spectro_get_calibration()
+        except SpectroError as exc:
+            self.log_message.emit(str(exc))
+
+    def _spectro_set_wavelength(self) -> None:
+        if not self.spectro_backend:
+            return
+        nm = self.spectro_wl_spin.value()
+        try:
+            self.spectro_backend.set_wavelength(nm)
+            self._spectro_update_range()
+            self.log_message.emit(f"Centre wavelength set to {nm:.1f} nm.")
+            if self.spectro_cal_label.text() != "--":
+                self._spectro_get_calibration()
+        except SpectroError as exc:
+            self.log_message.emit(str(exc))
+
+    def _spectro_update_range(self) -> None:
+        if not self.spectro_backend:
+            return
+        try:
+            lo, hi = self.spectro_backend.get_wavelength_limits()
+            self.spectro_range_label.setText(f"{lo:.0f} – {hi:.0f} nm")
+            self.spectro_wl_spin.setRange(lo, hi)
+        except SpectroError as exc:
+            self.log_message.emit(str(exc))
+
+    def _spectro_get_calibration(self) -> None:
+        if not self.spectro_backend:
+            return
+        n_pixels = (
+            self.backend.frame_width()
+            if self.backend and self.backend.is_connected()
+            else 1024
+        )
+        pixel_um = self.spectro_pixel_width_spin.value()
+        try:
+            axis = self.spectro_backend.get_calibration(n_pixels, pixel_um)
+            lo = float(np.nanmin(axis))
+            hi = float(np.nanmax(axis))
+            self.spectro_cal_label.setText(
+                f"{n_pixels} px  |  {lo:.1f} – {hi:.1f} nm"
+            )
+            self.wavelength_axis_changed.emit(axis)
+            self.log_message.emit(
+                f"Wavelength calibration: {n_pixels} px, {lo:.1f}–{hi:.1f} nm."
+            )
+        except SpectroError as exc:
             self.log_message.emit(str(exc))
 
     def _apply_config(self) -> None:

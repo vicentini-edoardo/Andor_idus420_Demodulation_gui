@@ -29,6 +29,7 @@ snom = [
   "nea_tools",
   "nest_asyncio>=1.6,<2",
 ]
+spectrograph = []  # pyAndorSpectrograph ships with the Andor SDK; not on PyPI
 
 [project.scripts]
 idus420-gui = "idus420_gui.__main__:main"

@@ -40,6 +40,7 @@ class LiveSpectrumPanel(QWidget):
         self.backend: CameraBackend | None = None
         self.worker: LiveSpectrumWorker | None = None
         self._detector_width = 100_000
+        self._wavelength_axis: np.ndarray | None = None
         self._syncing_roi = False
         self._syncing_roi2 = False
         self._history_t: deque[float] = deque()
@@ -67,6 +68,33 @@ class LiveSpectrumPanel(QWidget):
 
     def set_exposure(self, value: float) -> None:
         self.exposure_spin.setValue(value)
+
+    def set_wavelength_axis(self, axis: object) -> None:
+        """Accept a calibrated wavelength array (nm per pixel) or None to reset."""
+        import numpy as _np
+        self._wavelength_axis = _np.asarray(axis, dtype=_np.float64) if axis is not None else None
+        label = "Wavelength (nm)" if self._wavelength_axis is not None else "Pixel"
+        self.spectrum_plot.setLabel("bottom", label)
+        self._update_roi_region()
+        self._update_roi_region2()
+
+    # ------------------------------------------------------------------
+    # Coordinate helpers (pixel ↔ wavelength)
+    # ------------------------------------------------------------------
+
+    def _px_to_x(self, px: int) -> float:
+        """Map pixel index to x-axis value (wavelength if axis set, else pixel)."""
+        if self._wavelength_axis is None:
+            return float(px)
+        px = max(0, min(px, len(self._wavelength_axis) - 1))
+        return float(self._wavelength_axis[px])
+
+    def _x_to_px(self, x: float) -> int:
+        """Map x-axis value back to nearest pixel index."""
+        if self._wavelength_axis is None:
+            return max(0, min(int(round(x)), self._detector_width - 1))
+        import numpy as _np
+        return int(_np.argmin(_np.abs(self._wavelength_axis - x)))
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -297,7 +325,10 @@ class LiveSpectrumPanel(QWidget):
 
     def _update_frame(self, frame: object) -> None:
         arr = np.asarray(frame, dtype=np.uint16)
-        self.spectrum_curve.setData(arr)
+        if self._wavelength_axis is not None and len(self._wavelength_axis) == arr.size:
+            self.spectrum_curve.setData(self._wavelength_axis, arr.astype(np.float64))
+        else:
+            self.spectrum_curve.setData(arr)
         y_min = int(arr.min()) if arr.size else 0
         y_max = int(arr.max()) if arr.size else 0
         self._set_readout(arr.size, y_min, y_max)
@@ -402,18 +433,19 @@ class LiveSpectrumPanel(QWidget):
         if self._syncing_roi:
             return
         self._syncing_roi = True
-        self.roi_region.setRegion((self.roi_start.value(), self.roi_end.value()))
+        self.roi_region.setRegion((
+            self._px_to_x(self.roi_start.value()),
+            self._px_to_x(self.roi_end.value()),
+        ))
         self._syncing_roi = False
 
     def _update_roi_spinboxes_from_region(self) -> None:
         if self._syncing_roi:
             return
         lower, upper = self.roi_region.getRegion()
-        lower_i = max(0, min(int(round(lower)), self._detector_width - 1))
-        upper_i = max(0, min(int(round(upper)), self._detector_width - 1))
         self._syncing_roi = True
-        self.roi_start.setValue(lower_i)
-        self.roi_end.setValue(upper_i)
+        self.roi_start.setValue(self._x_to_px(lower))
+        self.roi_end.setValue(self._x_to_px(upper))
         self._syncing_roi = False
         self._update_roi_region()
 
@@ -421,18 +453,19 @@ class LiveSpectrumPanel(QWidget):
         if self._syncing_roi2:
             return
         self._syncing_roi2 = True
-        self.roi_region2.setRegion((self.roi_start2.value(), self.roi_end2.value()))
+        self.roi_region2.setRegion((
+            self._px_to_x(self.roi_start2.value()),
+            self._px_to_x(self.roi_end2.value()),
+        ))
         self._syncing_roi2 = False
 
     def _update_roi_spinboxes_from_region2(self) -> None:
         if self._syncing_roi2:
             return
         lower, upper = self.roi_region2.getRegion()
-        lower_i = max(0, min(int(round(lower)), self._detector_width - 1))
-        upper_i = max(0, min(int(round(upper)), self._detector_width - 1))
         self._syncing_roi2 = True
-        self.roi_start2.setValue(lower_i)
-        self.roi_end2.setValue(upper_i)
+        self.roi_start2.setValue(self._x_to_px(lower))
+        self.roi_end2.setValue(self._x_to_px(upper))
         self._syncing_roi2 = False
         self._update_roi_region2()
 

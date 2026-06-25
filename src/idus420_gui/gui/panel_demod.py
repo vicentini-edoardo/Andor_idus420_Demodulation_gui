@@ -55,6 +55,7 @@ class DemodPanel(QWidget):
         super().__init__(parent)
         self.backend: CameraBackend | None = None
         self._detector_width: int = 100_000
+        self._wavelength_axis: np.ndarray | None = None
         self.worker: DemodulationWorker | None = None
         self.peak_history: list[float] = []
         self._build_ui()
@@ -76,6 +77,13 @@ class DemodPanel(QWidget):
 
     def set_exposure(self, value: float) -> None:
         self.exposure_spin.setValue(value)
+
+    def set_wavelength_axis(self, axis: object) -> None:
+        """Accept a calibrated wavelength array (nm per pixel) or None to reset."""
+        self._wavelength_axis = np.asarray(axis, dtype=np.float64) if axis is not None else None
+        label = "Wavelength (nm)" if self._wavelength_axis is not None else "Pixel"
+        self.spectrum_plot.setLabel("bottom", label)
+        self._update_roi_region()
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -268,7 +276,7 @@ class DemodPanel(QWidget):
         self._set_running_ui(True)
         self.peak_history.clear()
         self.worker = DemodulationWorker(self.backend, self.settings(), continuous=True)
-        self.worker.frame_acquired.connect(lambda frame: self.spectrum_curve.setData(frame))
+        self.worker.frame_acquired.connect(self._on_frame_acquired)
         self.worker.block_complete.connect(self._handle_block)
         self.worker.demod_result.connect(self._handle_result)
         self.worker.error.connect(self.log_message.emit)
@@ -307,6 +315,13 @@ class DemodPanel(QWidget):
             return False
         return True
 
+    def _on_frame_acquired(self, frame: object) -> None:
+        arr = np.asarray(frame, dtype=np.float64)
+        if self._wavelength_axis is not None and len(self._wavelength_axis) == arr.size:
+            self.spectrum_curve.setData(self._wavelength_axis, arr)
+        else:
+            self.spectrum_curve.setData(arr)
+
     def _handle_block(self, ts: object) -> None:
         x, y = _decimate(ts)  # type: ignore[arg-type]
         if x is None:
@@ -328,7 +343,15 @@ class DemodPanel(QWidget):
         )
 
     def _update_roi_region(self) -> None:
-        self.roi_region.setRegion((self.roi_start.value(), self.roi_end.value()))
+        if self._wavelength_axis is not None:
+            lo = int(np.clip(self.roi_start.value(), 0, len(self._wavelength_axis) - 1))
+            hi = int(np.clip(self.roi_end.value(), 0, len(self._wavelength_axis) - 1))
+            self.roi_region.setRegion((
+                float(self._wavelength_axis[lo]),
+                float(self._wavelength_axis[hi]),
+            ))
+        else:
+            self.roi_region.setRegion((self.roi_start.value(), self.roi_end.value()))
 
     def _set_running_ui(self, running: bool) -> None:
         for widget in [
