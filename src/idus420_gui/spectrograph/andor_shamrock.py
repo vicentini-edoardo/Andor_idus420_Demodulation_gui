@@ -44,7 +44,7 @@ class AndorShamrockBackend(SpectroBackend):
         ret_code = ret[0] if isinstance(ret, (tuple, list)) else int(ret)
         _check(ret_code, "Initialize")
         self._spc = spc
-        ret, n = spc.GetNumberGratings(0, 64)
+        ret, n = spc.GetNumberGratings(0)
         _check(ret, "GetNumberGratings")
         self._n_gratings = int(n)
         self._connected = True
