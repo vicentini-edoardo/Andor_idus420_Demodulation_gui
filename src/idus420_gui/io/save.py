@@ -27,14 +27,17 @@ def save_run(
     demod_results: list[DemodResult],
     metadata: dict[str, Any],
     frame_times: np.ndarray | None = None,
+    wavelength_axis: np.ndarray | None = None,
 ) -> None:
     """Save by extension, supporting `.npz` and `.h5`."""
     target = Path(path)
     if target.suffix == ".npz":
-        save_npz(target, frames, roi_timeseries, demod_results, metadata, frame_times)
+        save_npz(target, frames, roi_timeseries, demod_results, metadata, frame_times,
+                 wavelength_axis)
         return
     if target.suffix in {".h5", ".hdf5"}:
-        save_h5(target, frames, roi_timeseries, demod_results, metadata, frame_times)
+        save_h5(target, frames, roi_timeseries, demod_results, metadata, frame_times,
+                wavelength_axis)
         return
     raise ValueError("Output path must end with .npz, .h5, or .hdf5.")
 
@@ -53,6 +56,7 @@ def save_npz(
     demod_results: list[DemodResult],
     metadata: dict[str, Any],
     frame_times: np.ndarray | None = None,
+    wavelength_axis: np.ndarray | None = None,
 ) -> None:
     """Save run products in compressed NumPy format (atomic: .tmp then rename)."""
     path = Path(path)
@@ -63,6 +67,8 @@ def save_npz(
     # np.savez_compressed appends ".npz" unless the name already ends with it,
     # so the temp name keeps the suffix to land exactly where we expect.
     tmp_path = path.parent / (path.name + ".tmp.npz")
+    wl = (np.asarray(wavelength_axis, dtype=np.float64)
+          if wavelength_axis is not None else np.empty(0, dtype=np.float64))
     try:
         np.savez_compressed(
             tmp_path,
@@ -70,6 +76,7 @@ def save_npz(
             roi_timeseries=np.asarray(roi_timeseries, dtype=np.float64),
             frame_times_s=_frame_times_array(frame_times),
             demod_results=_demod_structured(demod_results),
+            wavelength_axis_nm=wl,
             metadata=json.dumps(meta, default=str),
         )
         tmp_path.replace(path)
@@ -85,6 +92,7 @@ def save_h5(
     demod_results: list[DemodResult],
     metadata: dict[str, Any],
     frame_times: np.ndarray | None = None,
+    wavelength_axis: np.ndarray | None = None,
 ) -> None:
     """Save run products in HDF5 format (atomic: writes to .tmp then renames)."""
     path = Path(path)
@@ -93,12 +101,15 @@ def save_h5(
     frames_u16 = np.asarray(frames, dtype=np.uint16)
     meta = dict(metadata)
     meta["frames_sha256"] = _frames_sha256(frames_u16)
+    wl = (np.asarray(wavelength_axis, dtype=np.float64)
+          if wavelength_axis is not None else np.empty(0, dtype=np.float64))
     try:
         with h5py.File(tmp_path, "w") as h5:
             h5.create_dataset("frames", data=frames_u16, compression="gzip")
             h5.create_dataset("roi_timeseries", data=np.asarray(roi_timeseries, dtype=np.float64))
             h5.create_dataset("frame_times_s", data=_frame_times_array(frame_times))
             h5.create_dataset("demod_results", data=_demod_structured(demod_results))
+            h5.create_dataset("wavelength_axis_nm", data=wl)
             h5.attrs["metadata"] = json.dumps(meta, default=str)
         tmp_path.replace(path)
     except Exception:
@@ -165,6 +176,7 @@ def save_scan_h5(
     path: str | Path,
     scan: ScanResult,
     metadata: dict[str, Any],
+    wavelength_axis: np.ndarray | None = None,
 ) -> None:
     """Save a full 2-D raster scan to a single HDF5 file.
 
@@ -217,9 +229,12 @@ def save_scan_h5(
     }
 
     tmp_path = path.parent / (path.name + ".tmp")
+    wl = (np.asarray(wavelength_axis, dtype=np.float64)
+          if wavelength_axis is not None else np.empty(0, dtype=np.float64))
     try:
         with h5py.File(tmp_path, "w") as h5:
             h5.attrs["metadata"] = json.dumps(meta, default=str)
+            h5.create_dataset("wavelength_axis_nm", data=wl)
 
             sg = h5.create_group("scan")
             sg.create_dataset("coords_xy_nm", data=coords_xy)

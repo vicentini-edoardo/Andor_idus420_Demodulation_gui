@@ -44,11 +44,15 @@ class AcquisitionPanel(QWidget):
         self.demod_source = demod_source
         self.worker: AcquisitionWorker | None = None
         self._run_start_time: float = 0.0
+        self._wavelength_axis: object = None
         self._build_ui()
         self._restore_settings()
 
     def set_backend(self, backend: CameraBackend | None) -> None:
         self.backend = backend
+
+    def set_wavelength_axis(self, axis: object) -> None:
+        self._wavelength_axis = axis
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -236,13 +240,14 @@ class AcquisitionPanel(QWidget):
         roi_ts = processed["roi_timeseries"]  # type: ignore[index]
         results = processed["demod_results"]  # type: ignore[index]
         frame_times = processed.get("frame_times_s")  # type: ignore[attr-defined]
+        wl = self._wavelength_axis  # type: ignore[attr-defined]
         if self.save_npz_cb.isChecked():
             path = out_dir / f"{stem}.npz"
-            save_npz(path, frames, roi_ts, results, metadata, frame_times)  # type: ignore[arg-type]
+            save_npz(path, frames, roi_ts, results, metadata, frame_times, wl)  # type: ignore[arg-type]
             self.log_message.emit(f"Saved {path}")
         if self.save_h5_cb.isChecked():
             path = out_dir / f"{stem}.h5"
-            save_h5(path, frames, roi_ts, results, metadata, frame_times)  # type: ignore[arg-type]
+            save_h5(path, frames, roi_ts, results, metadata, frame_times, wl)  # type: ignore[arg-type]
             self.log_message.emit(f"Saved {path}")
         if self.save_txt_cb.isChecked():
             path = out_dir / f"{stem}.txt"

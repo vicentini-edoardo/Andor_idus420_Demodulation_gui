@@ -100,6 +100,8 @@ class MainWindow(QMainWindow):
         self.camera_panel.frame_geometry_changed.connect(self.demod_panel.set_frame_width)
         self.camera_panel.wavelength_axis_changed.connect(self.live_panel.set_wavelength_axis)
         self.camera_panel.wavelength_axis_changed.connect(self.demod_panel.set_wavelength_axis)
+        self.camera_panel.wavelength_axis_changed.connect(self.acquire_panel.set_wavelength_axis)
+        self.camera_panel.wavelength_axis_changed.connect(self.scan_panel.set_wavelength_axis)
         self.live_panel.log_message.connect(self.log)
         self.demod_panel.log_message.connect(self.log)
         self.acquire_panel.log_message.connect(self.log)

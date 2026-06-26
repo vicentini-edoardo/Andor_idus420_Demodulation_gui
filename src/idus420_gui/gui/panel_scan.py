@@ -105,6 +105,7 @@ class ScanPanel(QWidget):
         # adjusted so auto-scaling to data does not clobber their min/max.
         self._cb_user_levels: set[str] = set()
         self._suppress_cb_signal: bool = False
+        self._wavelength_axis: object = None
 
         self._build_ui()
         self._restore_settings()
@@ -118,6 +119,9 @@ class ScanPanel(QWidget):
 
     def set_backend(self, backend: CameraBackend | None) -> None:
         self.backend = backend
+
+    def set_wavelength_axis(self, axis: object) -> None:
+        self._wavelength_axis = axis
 
     # ------------------------------------------------------------------
     # UI construction
@@ -794,7 +798,7 @@ class ScanPanel(QWidget):
 
         metadata = dict(result.metadata)
         try:
-            save_scan_h5(path, result, metadata)
+            save_scan_h5(path, result, metadata, self._wavelength_axis)  # type: ignore[arg-type]
             self.log_message.emit(f"Scan saved to {path}")
         except Exception as exc:  # noqa: BLE001
             self.log_message.emit(f"Scan save failed: {exc}")
