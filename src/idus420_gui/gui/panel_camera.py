@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
-from PyQt6.QtCore import QSettings, pyqtSignal
+from PyQt6.QtCore import QSettings, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -59,6 +61,7 @@ class CameraPanel(QWidget):
         self.backend: CameraBackend | None = None
         self.spectro_backend: SpectroBackend | None = None
         self._pending_changes = False
+        self._last_calibration: np.ndarray | None = None
         self._build_ui()
         self._restore_settings()
 
@@ -571,13 +574,18 @@ class CameraPanel(QWidget):
         self.spectro_backend = None
         self.spectro_info_label.setText("Not connected")
         self.spectro_range_label.setText("--")
-        self.spectro_cal_label.setText("--")
+        if self._last_calibration is not None:
+            n = len(self._last_calibration)
+            lo = float(np.nanmin(self._last_calibration))
+            hi = float(np.nanmax(self._last_calibration))
+            self.spectro_cal_label.setText(f"{n} px  |  {lo:.1f} – {hi:.1f} nm  (offline)")
+        else:
+            self.spectro_cal_label.setText("--")
         self.spectro_grating_combo.clear()
         self._spectro_set_enabled(False)
         self.spectro_connect_button.setEnabled(True)
         self.spectro_disconnect_button.setEnabled(False)
         self.spectro_backend_combo.setEnabled(True)
-        self.wavelength_axis_changed.emit(None)
         self.log_message.emit("Spectrograph disconnected.")
 
     def _spectro_set_enabled(self, enabled: bool) -> None:
@@ -602,7 +610,7 @@ class CameraPanel(QWidget):
             self._spectro_update_range()
             self.log_message.emit(f"Grating set to slot {idx}.")
             # Re-calibrate automatically if a calibration was already active.
-            if self.spectro_cal_label.text() != "--":
+            if self._last_calibration is not None:
                 self._spectro_get_calibration()
         except SpectroError as exc:
             self.log_message.emit(str(exc))
@@ -615,7 +623,7 @@ class CameraPanel(QWidget):
             self.spectro_backend.set_wavelength(nm)
             self._spectro_update_range()
             self.log_message.emit(f"Centre wavelength set to {nm:.1f} nm.")
-            if self.spectro_cal_label.text() != "--":
+            if self._last_calibration is not None:
                 self._spectro_get_calibration()
         except SpectroError as exc:
             self.log_message.emit(str(exc))
@@ -633,19 +641,19 @@ class CameraPanel(QWidget):
     def _spectro_get_calibration(self) -> None:
         if not self.spectro_backend:
             return
-        n_pixels = (
-            self.backend.frame_width()
-            if self.backend and self.backend.is_connected()
-            else 1024
-        )
-        pixel_um = self.spectro_pixel_width_spin.value()
+        hbin = self.hbin_spin.value()
+        if self.backend and self.backend.is_connected():
+            n_pixels = self.backend.frame_width()
+        else:
+            n_pixels = 1024 // hbin
+        pixel_um = self.spectro_pixel_width_spin.value() * hbin
         try:
             axis = self.spectro_backend.get_calibration(n_pixels, pixel_um)
             lo = float(np.nanmin(axis))
             hi = float(np.nanmax(axis))
-            self.spectro_cal_label.setText(
-                f"{n_pixels} px  |  {lo:.1f} – {hi:.1f} nm"
-            )
+            self.spectro_cal_label.setText(f"{n_pixels} px  |  {lo:.1f} – {hi:.1f} nm")
+            self._last_calibration = axis
+            self._save_calibration()
             self.wavelength_axis_changed.emit(axis)
             self.log_message.emit(
                 f"Wavelength calibration: {n_pixels} px, {lo:.1f}–{hi:.1f} nm."
@@ -671,6 +679,12 @@ class CameraPanel(QWidget):
             )
             self._clear_pending()
             self._save_settings()
+            if (
+                self.spectro_backend
+                and self.spectro_backend.is_connected()
+                and self._last_calibration is not None
+            ):
+                self._spectro_get_calibration()
             self.log_message.emit("Camera settings applied.")
         except CameraError as exc:
             self.log_message.emit(str(exc))
@@ -733,6 +747,31 @@ class CameraPanel(QWidget):
     # Persistence
     # ------------------------------------------------------------------
 
+    def _save_calibration(self) -> None:
+        if self._last_calibration is None:
+            return
+        s = QSettings("idus420_gui", "CameraPanel")
+        s.setValue(
+            f"{_SETTINGS_KEY_PREFIX}/calibration",
+            json.dumps(self._last_calibration.tolist()),
+        )
+
+    def _restore_calibration(self) -> None:
+        s = QSettings("idus420_gui", "CameraPanel")
+        val = s.value(f"{_SETTINGS_KEY_PREFIX}/calibration")
+        if val is None:
+            return
+        try:
+            axis = np.asarray(json.loads(str(val)), dtype=np.float64)
+        except Exception:
+            return
+        self._last_calibration = axis
+        n = len(axis)
+        lo = float(np.nanmin(axis))
+        hi = float(np.nanmax(axis))
+        self.spectro_cal_label.setText(f"{n} px  |  {lo:.1f} – {hi:.1f} nm  (restored)")
+        self.wavelength_axis_changed.emit(axis)
+
     def _save_settings(self) -> None:
         s = QSettings("idus420_gui", "CameraPanel")
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/exposure_s", self.exposure_spin.value())
@@ -781,3 +820,4 @@ class CameraPanel(QWidget):
         if (val := s.value(f"{_SETTINGS_KEY_PREFIX}/crop_vbin")) is not None:
             self.crop_vbin_spin.setValue(int(val))
         self._clear_pending()
+        QTimer.singleShot(0, self._restore_calibration)
