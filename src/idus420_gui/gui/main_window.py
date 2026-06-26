@@ -28,17 +28,33 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class _GitPullWorker(QThread):
-    finished = pyqtSignal(int, str)  # returncode, combined output
+    finished = pyqtSignal(int, str)  # returncode, message
 
     def run(self) -> None:
         try:
+            head = subprocess.run(
+                ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
+                capture_output=True, text=True,
+            ).stdout.strip()
+
             r = subprocess.run(
                 ["git", "-C", str(_REPO_ROOT), "pull"],
-                capture_output=True,
-                text=True,
-                timeout=30,
+                capture_output=True, text=True, timeout=30,
             )
-            self.finished.emit(r.returncode, r.stdout + r.stderr)
+            if r.returncode != 0:
+                self.finished.emit(r.returncode, (r.stdout + r.stderr).strip())
+                return
+
+            log = subprocess.run(
+                ["git", "-C", str(_REPO_ROOT), "log", f"{head}..HEAD",
+                 "--pretty=format:• %s", "--no-merges"],
+                capture_output=True, text=True,
+            ).stdout.strip()
+
+            if log:
+                self.finished.emit(0, log)
+            else:
+                self.finished.emit(0, "Already up to date.")
         except Exception as exc:
             self.finished.emit(-1, str(exc))
 
@@ -213,18 +229,26 @@ class MainWindow(QMainWindow):
             self._update_btn.setText("Update")
         msg = QMessageBox(self)
         msg.setWindowTitle("Update")
-        msg.setText(output.strip() or "(no output)")
-        if returncode == 0:
-            msg.setInformativeText("Restart now to apply changes?")
+        if returncode != 0:
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setText("Update failed.")
+            msg.setInformativeText(output)
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+        elif output == "Already up to date.":
+            msg.setText("Already up to date.")
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+        else:
+            msg.setText("What's new:")
+            msg.setInformativeText(output)
             msg.setStandardButtons(
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
+            msg.button(QMessageBox.StandardButton.Yes).setText("Restart now")
+            msg.button(QMessageBox.StandardButton.No).setText("Later")
             if msg.exec() == QMessageBox.StandardButton.Yes:
                 self._restart()
-        else:
-            msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-            msg.exec()
 
     def _restart(self) -> None:
         subprocess.Popen([sys.executable, "-m", "idus420_gui"])
