@@ -46,6 +46,7 @@ class AndorIDusBackend(CameraBackend):
         self._frame_width = 0
         self._n_kinetics = 0
         self._code_names = self._build_code_name_map()
+        self._crop_active = False
 
     def connect(self) -> None:
         self._check(self._sdk.Initialize(""), "Initialize")
@@ -159,12 +160,14 @@ class AndorIDusBackend(CameraBackend):
                 "SetIsolatedCropMode",
             )
             self._frame_width = crop.crop_width // hbin
+            self._crop_active = True
         else:
-            # Disable crop mode, then configure read mode normally.
-            self._check(
-                self._sdk.SetIsolatedCropMode(0, 1, xpix, 1, 1),
-                "SetIsolatedCropMode(disable)",
-            )
+            if self._crop_active:
+                self._check(
+                    self._sdk.SetIsolatedCropMode(0, 1, xpix, 1, 1),
+                    "SetIsolatedCropMode(disable)",
+                )
+                self._crop_active = False
             if cfg.read_mode is ReadMode.SINGLE_TRACK:
                 hbin = int(cfg.single_track.horizontal_bin)
                 self._validate_horizontal_bin(hbin, xpix, "Single-Track")
