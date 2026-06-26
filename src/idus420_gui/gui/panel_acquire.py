@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
 from idus420_gui.camera.base import CameraBackend
 from idus420_gui.gui import theme
 from idus420_gui.gui.panel_demod import DemodPanel
+from idus420_gui.io.rp_state import load_rp_metadata
 from idus420_gui.io.save import save_h5, save_npz, save_txt
 from idus420_gui.workers.acquisition import AcquisitionWorker, DemodulationSettings
 
@@ -109,6 +110,17 @@ class AcquisitionPanel(QWidget):
         format_col.addWidget(self.save_txt_cb)
         format_col.addWidget(self.save_sif_cb)
 
+        self.rp_state_cb = QCheckBox("Include RP state")
+        self.rp_state_path = QLineEdit()
+        self.rp_state_path.setReadOnly(True)
+        self.rp_state_path.setPlaceholderText("rp_state.json path…")
+        self.rp_state_browse = QPushButton("Browse")
+        self.rp_state_browse.setFixedWidth(70)
+        rp_row = QHBoxLayout()
+        rp_row.setSpacing(4)
+        rp_row.addWidget(self.rp_state_path)
+        rp_row.addWidget(self.rp_state_browse)
+
         self.start_button = QPushButton("Start")
         self.stop_button = QPushButton("Stop")
         self.stop_button.setEnabled(False)
@@ -135,6 +147,9 @@ class AcquisitionPanel(QWidget):
         row += 1
         grid.addWidget(_lbl("Formats"), row, 0)
         grid.addLayout(format_col, row, 1, 1, 3)
+        row += 1
+        grid.addWidget(self.rp_state_cb, row, 0)
+        grid.addLayout(rp_row, row, 1, 1, 3)
         row += 1
         grid.addLayout(button_row, row, 0, 1, 4)
         row += 1
@@ -178,6 +193,9 @@ class AcquisitionPanel(QWidget):
         outer.addWidget(splitter, stretch=1)
 
         self.choose_dir.clicked.connect(self._choose_directory)
+        self.rp_state_cb.toggled.connect(self._update_rp_widgets)
+        self.rp_state_browse.clicked.connect(self._browse_rp_state)
+        self._update_rp_widgets(False)
         self.start_button.clicked.connect(self.start)
         self.stop_button.clicked.connect(self.stop)
 
@@ -237,6 +255,13 @@ class AcquisitionPanel(QWidget):
             "f_search_halfwidth_hz": settings.f_search_halfwidth,
             "window": settings.window,
         }
+        if self.rp_state_cb.isChecked() and self.rp_state_path.text():
+            rp = load_rp_metadata(self.rp_state_path.text())
+            if rp is None:
+                p = self.rp_state_path.text()
+                self.log_message.emit(f"Warning: could not read RP state from {p!r} — skipping.")
+            else:
+                metadata.update(rp)
         roi_ts = processed["roi_timeseries"]  # type: ignore[index]
         results = processed["demod_results"]  # type: ignore[index]
         frame_times = processed.get("frame_times_s")  # type: ignore[attr-defined]
@@ -284,6 +309,20 @@ class AcquisitionPanel(QWidget):
         if directory:
             self.output_dir.setText(directory)
 
+    def _update_rp_widgets(self, enabled: bool) -> None:
+        self.rp_state_path.setEnabled(enabled)
+        self.rp_state_browse.setEnabled(enabled)
+
+    def _browse_rp_state(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select rp_state.json",
+            self.rp_state_path.text() or "",
+            "JSON files (*.json);;All files (*)",
+        )
+        if path:
+            self.rp_state_path.setText(path)
+
     def _set_running_ui(self, running: bool) -> None:
         for widget in [
             self.duration_s,
@@ -296,10 +335,14 @@ class AcquisitionPanel(QWidget):
             self.save_h5_cb,
             self.save_txt_cb,
             self.save_sif_cb,
+            self.rp_state_cb,
             self.start_button,
         ]:
             widget.setEnabled(not running)
         self.stop_button.setEnabled(running)
+        rp_active = not running and self.rp_state_cb.isChecked()
+        self.rp_state_path.setEnabled(rp_active)
+        self.rp_state_browse.setEnabled(rp_active)
         self.running_changed.emit(running)
 
     # ------------------------------------------------------------------
@@ -317,6 +360,8 @@ class AcquisitionPanel(QWidget):
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/save_h5", self.save_h5_cb.isChecked())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/save_txt", self.save_txt_cb.isChecked())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/save_sif", self.save_sif_cb.isChecked())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/rp_state_enabled", self.rp_state_cb.isChecked())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/rp_state_path", self.rp_state_path.text())
 
     def _restore_settings(self) -> None:
         s = QSettings("idus420_gui", "AcquirePanel")
@@ -342,6 +387,9 @@ class AcquisitionPanel(QWidget):
         self.save_h5_cb.setChecked(bval("save_h5", False))
         self.save_txt_cb.setChecked(bval("save_txt", False))
         self.save_sif_cb.setChecked(bval("save_sif", False))
+        self.rp_state_cb.setChecked(bval("rp_state_enabled", False))
+        if (v := s.value(f"{_SETTINGS_KEY_PREFIX}/rp_state_path")) is not None:
+            self.rp_state_path.setText(str(v))
 
 
 def _lbl(text: str) -> QLabel:

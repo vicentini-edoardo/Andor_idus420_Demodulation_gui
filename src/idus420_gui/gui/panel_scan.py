@@ -11,6 +11,7 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QSettings, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -30,6 +31,7 @@ from PyQt6.QtWidgets import (
 from idus420_gui.camera.base import CameraBackend
 from idus420_gui.gui import theme
 from idus420_gui.gui.panel_demod import DemodPanel
+from idus420_gui.io.rp_state import load_rp_metadata
 from idus420_gui.io.save import save_scan_h5
 from idus420_gui.motion.base import ScanGrid
 from idus420_gui.workers.scan import PointResult, ScanResult, ScanWorker
@@ -282,10 +284,23 @@ class ScanPanel(QWidget):
         dir_row.addWidget(choose_btn)
         self.stem = QLineEdit("snom_scan")
 
+        self.rp_state_cb = QCheckBox("Include RP state")
+        self.rp_state_path = QLineEdit()
+        self.rp_state_path.setReadOnly(True)
+        self.rp_state_path.setPlaceholderText("rp_state.json path…")
+        self.rp_state_browse = QPushButton("Browse")
+        self.rp_state_browse.setFixedWidth(70)
+        rp_row = QHBoxLayout()
+        rp_row.setSpacing(4)
+        rp_row.addWidget(self.rp_state_path)
+        rp_row.addWidget(self.rp_state_browse)
+
         out_g.addWidget(_lbl("Output dir"), 0, 0)
         out_g.addLayout(dir_row, 0, 1)
         out_g.addWidget(_lbl("Filename stem"), 1, 0)
         out_g.addWidget(self.stem, 1, 1)
+        out_g.addWidget(self.rp_state_cb, 2, 0)
+        out_g.addLayout(rp_row, 2, 1)
         ctrl_layout.addWidget(out_box)
 
         # Controls + progress
@@ -453,6 +468,9 @@ class ScanPanel(QWidget):
 
         # Signal wiring
         choose_btn.clicked.connect(self._choose_directory)
+        self.rp_state_cb.toggled.connect(self._update_rp_widgets)
+        self.rp_state_browse.clicked.connect(self._browse_rp_state)
+        self._update_rp_widgets(False)
         self.start_btn.clicked.connect(self.start)
         self.stop_btn.clicked.connect(self.stop)
         for w in (self.x_center, self.x_length, self.nx,
@@ -797,6 +815,13 @@ class ScanPanel(QWidget):
         path = out_dir / f"{stem}.h5"
 
         metadata = dict(result.metadata)
+        if self.rp_state_cb.isChecked() and self.rp_state_path.text():
+            rp = load_rp_metadata(self.rp_state_path.text())
+            if rp is None:
+                p = self.rp_state_path.text()
+                self.log_message.emit(f"Warning: could not read RP state from {p!r} — skipping.")
+            else:
+                metadata.update(rp)
         try:
             save_scan_h5(path, result, metadata, self._wavelength_axis)  # type: ignore[arg-type]
             self.log_message.emit(f"Scan saved to {path}")
@@ -849,10 +874,14 @@ class ScanPanel(QWidget):
             self.order_combo,
             self.frames_per_point,
             self.output_dir, self.stem,
+            self.rp_state_cb,
             self.start_btn,
         ]:
             w.setEnabled(not running)
         self.stop_btn.setEnabled(running)
+        rp_active = not running and self.rp_state_cb.isChecked()
+        self.rp_state_path.setEnabled(rp_active)
+        self.rp_state_browse.setEnabled(rp_active)
         self.running_changed.emit(running)
 
     def _axis_grid(self, center_um: float, length_um: float, n: int) -> tuple[float, float]:
@@ -895,6 +924,20 @@ class ScanPanel(QWidget):
         if d:
             self.output_dir.setText(d)
 
+    def _update_rp_widgets(self, enabled: bool) -> None:
+        self.rp_state_path.setEnabled(enabled)
+        self.rp_state_browse.setEnabled(enabled)
+
+    def _browse_rp_state(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select rp_state.json",
+            self.rp_state_path.text() or "",
+            "JSON files (*.json);;All files (*)",
+        )
+        if path:
+            self.rp_state_path.setText(path)
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
@@ -917,6 +960,8 @@ class ScanPanel(QWidget):
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/demod_combo_1", self.demod_combo_1.currentIndex())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/snom_combo_0", self.snom_combo_0.currentIndex())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/snom_combo_1", self.snom_combo_1.currentIndex())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/rp_state_enabled", self.rp_state_cb.isChecked())
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/rp_state_path", self.rp_state_path.text())
 
     def _restore_settings(self) -> None:
         s = QSettings("idus420_gui", "ScanPanel")
@@ -968,6 +1013,11 @@ class ScanPanel(QWidget):
         ]
         self._restyle_snom_slots()
         self._update_total_label()
+
+        rp_enabled = str(_f("rp_state_enabled") or "").lower() in {"true", "1", "yes"}
+        self.rp_state_cb.setChecked(rp_enabled)
+        if (v := _f("rp_state_path")) is not None:
+            self.rp_state_path.setText(str(v))
 
 
 def _lbl(text: str) -> QLabel:
