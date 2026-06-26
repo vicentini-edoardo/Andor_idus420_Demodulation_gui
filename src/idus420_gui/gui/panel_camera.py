@@ -66,12 +66,13 @@ class CameraPanel(QWidget):
         self._restore_settings()
 
     def _build_ui(self) -> None:
-        # Top-level layout: two columns side by side
-        # Left column: Connection + Cooling stacked
-        # Right column: Static Configuration (taller)
-        outer = QHBoxLayout(self)
+        # Top-level layout: camera panels row on top, spectrograph below
+        outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(10)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(10)
 
         left_col = QVBoxLayout()
         left_col.setSpacing(10)
@@ -129,7 +130,7 @@ class CameraPanel(QWidget):
         left_col.addWidget(cooling_box)
         left_col.addStretch(1)
 
-        outer.addLayout(left_col)
+        top_row.addLayout(left_col)
 
         # --- Static Configuration group (right column) ---
         config_box = QGroupBox("Static Configuration")
@@ -252,9 +253,10 @@ class CameraPanel(QWidget):
         right_col.addWidget(config_box)
         right_col.addStretch(1)
 
-        outer.addLayout(right_col, stretch=1)
+        top_row.addLayout(right_col, stretch=1)
+        outer.addLayout(top_row)
 
-        # --- Spectrograph column ---
+        # --- Spectrograph (below camera panels) ---
         spectro_box = QGroupBox("Spectrograph")
         sg = QGridLayout(spectro_box)
         sg.setSpacing(6)
@@ -328,11 +330,8 @@ class CameraPanel(QWidget):
         sg.addWidget(QLabel("Calibration"), row, 0)
         sg.addWidget(self.spectro_cal_label, row, 1)
 
-        spectro_col = QVBoxLayout()
-        spectro_col.setSpacing(10)
-        spectro_col.addWidget(spectro_box)
-        spectro_col.addStretch(1)
-        outer.addLayout(spectro_col)
+        outer.addWidget(spectro_box)
+        outer.addStretch(1)
 
         # --- Signals ---
         self.connect_button.clicked.connect(self._connect_backend)
