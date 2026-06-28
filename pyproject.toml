@@ -23,6 +23,7 @@ dev = [
   "pytest>=7.4,<9",
   "pytest-qt>=4.2,<5",
   "ruff>=0.4,<1",
+  "mypy>=1.8,<2",
 ]
 andor = []
 snom = [
@@ -46,4 +47,18 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["SLF001"]   # private-member access across panels/theme is intentional
+
+# Type checking is gated on the non-Qt core (processing/camera/workers/io/motion),
+# where annotations are complete and worth enforcing.  The Qt GUI layer is
+# excluded for now: PyQt6's pervasive `Widget | None` getters generate noise that
+# would need broad suppression rather than real bug fixes.
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+files = [
+  "src/idus420_gui/processing",
+  "src/idus420_gui/camera",
+  "src/idus420_gui/workers",
+  "src/idus420_gui/io",
+  "src/idus420_gui/motion",
+]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
 
 
 def _frames_sha256(frames: np.ndarray) -> str:
-    return hashlib.sha256(np.ascontiguousarray(frames)).hexdigest()
+    return hashlib.sha256(np.ascontiguousarray(frames).tobytes()).hexdigest()
 
 
 def save_run(
@@ -284,7 +285,7 @@ def save_scan_h5(
         raise
 
 
-def _demod_structured(results: list[DemodResult]) -> np.ndarray:
+def _demod_structured(results: Sequence[DemodResult | None]) -> np.ndarray:
     dtype = np.dtype(
         [
             ("peak_frequency", "f8"),
@@ -294,5 +295,8 @@ def _demod_structured(results: list[DemodResult]) -> np.ndarray:
     )
     out = np.zeros(len(results), dtype=dtype)
     for idx, result in enumerate(results):
-        out[idx] = (result.peak_frequency, result.peak_amplitude, result.snr)
+        if result is None:
+            out[idx] = (np.nan, np.nan, np.nan)
+        else:
+            out[idx] = (result.peak_frequency, result.peak_amplitude, result.snr)
     return out

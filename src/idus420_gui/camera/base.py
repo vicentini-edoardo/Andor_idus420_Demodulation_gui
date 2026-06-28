@@ -100,6 +100,23 @@ class CameraConfig:
     crop: CropConfig = CropConfig()
 
 
+# Canonical mapping between the user-facing combo labels and enum values.
+# Defined next to the enums (and consumed by the Camera panel for both combo
+# population and the label->enum lookup) so the displayed items and the lookup
+# table cannot drift apart and raise a KeyError when settings are applied.
+# Insertion order is the combo order.
+SHUTTER_MODE_LABELS: dict[str, ShutterMode] = {
+    "Permanently Open": ShutterMode.OPEN,
+    "Auto": ShutterMode.AUTO,
+    "Permanently Closed": ShutterMode.CLOSED,
+}
+
+READ_MODE_LABELS: dict[str, ReadMode] = {
+    "FVB": ReadMode.FVB,
+    "Single-Track": ReadMode.SINGLE_TRACK,
+}
+
+
 @dataclass(frozen=True)
 class AcquisitionTimings:
     """Actual timing values returned by the camera driver, in seconds."""

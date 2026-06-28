@@ -10,20 +10,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 from idus420_gui.camera.base import CameraBackend, TriggerMode
 from idus420_gui.motion.base import ScanGrid, SnomSample, StageBackend, StagePoint
 from idus420_gui.processing.demodulation import DemodResult, demodulate
 from idus420_gui.processing.roi import integrate_roi
-from idus420_gui.workers._frame_io import (
-    _MAX_REARM_ATTEMPTS,
-    _read_pending_frames,
-    _read_ready_frames,
-    _rearm_acquisition,
-    _rearm_message,
-    _timeout_failure_message,
-)
+from idus420_gui.workers._frame_io import pump_frames
 from idus420_gui.workers.acquisition import DemodulationSettings
 
 LOG = logging.getLogger(__name__)
@@ -83,7 +76,7 @@ class ScanWorker(QThread):
         grid: ScanGrid,
         settings: DemodulationSettings,
         metadata: dict[str, Any] | None = None,
-        parent: object | None = None,
+        parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self.camera = camera_backend
@@ -109,9 +102,8 @@ class ScanWorker(QThread):
                 self.stage.connect(self.metadata.get("snom_host", "nea-server"))
             t0_scan = time.monotonic()
             total = self.grid.total_points()
-            point_index = 0
 
-            for point in self.grid.points():
+            for point_index, point in enumerate(self.grid.points()):
                 if not self._running:
                     break
 
@@ -124,7 +116,7 @@ class ScanWorker(QThread):
 
                 frames: list[np.ndarray] = []
                 snom_samples: list[SnomSample] = []
-                demod_results: list[DemodResult] = []
+                demod_results: list[DemodResult | None] = []
 
                 # Start concurrent SNOM streaming if supported
                 snom_stop = threading.Event()
@@ -146,55 +138,16 @@ class ScanWorker(QThread):
                 )
                 self.camera.start()
 
-                consecutive_timeouts = 0
-                rearm_attempts = 0
-                while self._running and len(frames) < n_frames:
-                    if not self.camera.wait_next_frame(timeout_ms):
-                        pending = _read_pending_frames(
-                            self.camera,
-                            n_frames - len(frames),
-                        )
-                        if pending is not None:
-                            consecutive_timeouts = 0
-                            rearm_attempts = 0
-                            ready = pending
-                        else:
-                            consecutive_timeouts += 1
-                            if consecutive_timeouts >= 3:
-                                diagnostics = self.camera.acquisition_diagnostics()
-                                remaining = n_frames - len(frames)
-                                if rearm_attempts < _MAX_REARM_ATTEMPTS and remaining > 0:
-                                    rearm_attempts += 1
-                                    rearm_msg = _rearm_message(
-                                        timeout_ms,
-                                        rearm_attempts,
-                                        _MAX_REARM_ATTEMPTS,
-                                        diagnostics,
-                                    )
-                                    self.error.emit(
-                                        f"Point ({point.ix},{point.iy}): {rearm_msg}"
-                                    )
-                                    _rearm_acquisition(
-                                        self.camera,
-                                        self.settings.exposure_s,
-                                        remaining,
-                                    )
-                                    consecutive_timeouts = 0
-                                    continue
-                                self.error.emit(
-                                    f"Point ({point.ix},{point.iy}): "
-                                    f"{_timeout_failure_message(timeout_ms, diagnostics)}"
-                                )
-                                self._running = False
-                                break
-                            continue
-                    else:
-                        consecutive_timeouts = 0
-                        rearm_attempts = 0
-                        ready = _read_ready_frames(
-                            self.camera,
-                            n_frames - len(frames),
-                        )
+                for ready in pump_frames(
+                    self.camera,
+                    total_frames=n_frames,
+                    exposure_s=self.settings.exposure_s,
+                    timeout_ms=timeout_ms,
+                    is_running=lambda: self._running,
+                    emit_error=self.error.emit,
+                    on_fatal=self.stop,
+                    error_prefix=f"Point ({point.ix},{point.iy}): ",
+                ):
                     for frame in ready:
                         frames.append(frame.copy())
 
@@ -298,8 +251,7 @@ class ScanWorker(QThread):
                 )
                 result.point_results.append(pt_result)
                 self.point_data_ready.emit(point_index, pt_result)
-                point_index += 1
-                self.point_finished.emit(point_index, total)
+                self.point_finished.emit(point_index + 1, total)
 
         except Exception as exc:  # noqa: BLE001
             LOG.exception("ScanWorker error")

@@ -5,11 +5,19 @@ from idus420_gui.camera.andor import (
     _SHUTTER_TTL_TYPE,
     AndorIDusBackend,
 )
-from idus420_gui.camera.base import TempStatus
+from idus420_gui.camera.base import (
+    CameraConfig,
+    ReadMode,
+    ShutterMode,
+    TempStatus,
+    TriggerMode,
+)
 
 
 class _FakeErrorCodes:
     DRV_SUCCESS = 20002
+    DRV_IDLE = 20073
+    DRV_NOT_INITIALIZED = 20075
     DRV_TEMPERATURE_OFF = 20034
     DRV_TEMPERATURE_STABILIZED = 20036
 
@@ -116,6 +124,125 @@ def test_apply_shutter_falls_back_to_set_shutter_with_nonzero_times() -> None:
     assert closing == _DEFAULT_SHUTTER_TRANSFER_MS
     assert opening == _DEFAULT_SHUTTER_TRANSFER_MS
     assert closing > 0 and opening > 0
+
+
+class _RecordingSdk:
+    """Fake Andor SDK that records the order of every method call.
+
+    Tuple-returning queries are stubbed explicitly; every other ``SetXxx`` call
+    is captured via ``__getattr__`` and reports success.  This lets tests assert
+    the *sequence* of SDK calls a high-level method issues — the kind of check
+    that would have caught the shutter being driven through the wrong call.
+    """
+
+    DRV_SUCCESS = 20002
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple]] = []
+
+    def names(self) -> list[str]:
+        return [name for name, _args in self.calls]
+
+    def args_for(self, name: str) -> tuple:
+        for call_name, args in self.calls:
+            if call_name == name:
+                return args
+        raise AssertionError(f"{name} was never called")
+
+    # --- tuple-returning queries -------------------------------------------
+    def GetDetector(self):  # noqa: N802 - SDK naming
+        self.calls.append(("GetDetector", ()))
+        return 20002, 1024, 256
+
+    def GetAcquisitionTimings(self):  # noqa: N802
+        self.calls.append(("GetAcquisitionTimings", ()))
+        return 20002, 0.001, 0.002, 0.003
+
+    def GetReadOutTime(self):  # noqa: N802
+        self.calls.append(("GetReadOutTime", ()))
+        return 20002, 0.0005
+
+    def GetStatus(self):  # noqa: N802
+        self.calls.append(("GetStatus", ()))
+        return 20002, 20073  # DRV_IDLE
+
+    def GetShutterMinTimes(self):  # noqa: N802
+        self.calls.append(("GetShutterMinTimes", ()))
+        return 20002, 11, 23
+
+    def __getattr__(self, name: str):
+        def _record(*args):
+            self.calls.append((name, args))
+            return 20002
+        return _record
+
+
+def _recording_backend() -> tuple[AndorIDusBackend, _RecordingSdk]:
+    sdk = _RecordingSdk()
+    backend = AndorIDusBackend.__new__(AndorIDusBackend)
+    backend._sdk = sdk
+    backend._err = _FakeErrorCodes
+    backend._code_names = backend._build_code_name_map()
+    backend._xpix, backend._ypix = 1024, 256
+    backend._frame_width = 1024
+    backend._n_kinetics = 0
+    backend._crop_active = False
+    return backend, sdk
+
+
+def test_configure_drives_shutter_before_timings_query() -> None:
+    backend, sdk = _recording_backend()
+
+    backend.configure(
+        CameraConfig(
+            read_mode=ReadMode.FVB,
+            fvb_horizontal_bin=1,
+            shutter_mode=ShutterMode.OPEN,
+        )
+    )
+
+    names = sdk.names()
+    # FVB read mode configured and the internal shutter driven via SetShutterEx.
+    assert "SetReadMode" in names
+    assert "SetShutterEx" in names
+    assert "SetShutter" not in names  # the Ex variant must be preferred
+    # Shutter is applied before the timings are read back.
+    assert names.index("SetShutterEx") < names.index("GetAcquisitionTimings")
+    # The core analog/exposure chain is all issued.
+    for required in (
+        "SetADChannel",
+        "SetOutputAmplifier",
+        "SetHSSpeed",
+        "SetVSSpeed",
+        "SetPreAmpGain",
+        "SetExposureTime",
+    ):
+        assert required in names
+    # SetShutterEx(typ, mode, closing, opening, extmode) with non-zero min times.
+    assert sdk.args_for("SetShutterEx") == (_SHUTTER_TTL_TYPE, 1, 11, 23, 1)
+
+
+def test_setup_kinetic_sets_mode_then_prepares() -> None:
+    backend, sdk = _recording_backend()
+
+    timings = backend.setup_kinetic(0.01, 16, TriggerMode.EXTERNAL)
+
+    names = sdk.names()
+    for required in (
+        "SetAcquisitionMode",
+        "SetTriggerMode",
+        "SetNumberAccumulations",
+        "SetNumberKinetics",
+        "PrepareAcquisition",
+    ):
+        assert required in names
+    # Kinetic mode (3) and external trigger (1) configured before preparing.
+    assert sdk.args_for("SetAcquisitionMode") == (3,)
+    assert sdk.args_for("SetNumberKinetics") == (16,)
+    assert names.index("SetAcquisitionMode") < names.index("PrepareAcquisition")
+    # Timings come straight from the SDK stub.
+    assert timings.exposure_s == 0.001
+    assert timings.kinetic_s == 0.003
 
 
 def test_optional_length_helper_handles_wrapper_without_size_parameter() -> None:
