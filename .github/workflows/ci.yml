@@ -47,6 +47,9 @@ jobs:
       - name: Lint with ruff
         run: ruff check src tests
 
+      - name: Type-check core with mypy
+        run: mypy
+
       - name: Run tests (Linux — virtual display)
         if: runner.os == 'Linux'
         run: xvfb-run --auto-servernum python -m pytest -q

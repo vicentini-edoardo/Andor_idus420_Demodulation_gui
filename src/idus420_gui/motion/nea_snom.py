@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import queue
 import threading
+from typing import Any
 
 try:
     import asyncio
@@ -39,9 +40,10 @@ class NeaSnomBackend(StageBackend):
             )
         self._connected = False
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._context = None
-        self._nea = None
-        self._stream_module = None
+        # Handles into the optional neaspec/nea_tools SDK, populated on connect.
+        self._context: Any = None
+        self._nea: Any = None
+        self._stream_module: Any = None
 
     # ------------------------------------------------------------------
     # Connection

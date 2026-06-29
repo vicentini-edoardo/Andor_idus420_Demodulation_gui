@@ -17,6 +17,7 @@ from idus420_gui.workers._frame_io import (
     _read_ready_frames,
     _rearm_message,
     _timeout_failure_message,
+    pump_frames,
 )
 
 # ---------------------------------------------------------------------------
@@ -93,6 +94,147 @@ def test_read_pending_frames_returns_frames_when_available() -> None:
     frames = _read_pending_frames(backend, max_frames=8)
     assert frames is not None
     assert frames.shape[0] <= 8
+
+
+# ---------------------------------------------------------------------------
+# pump_frames generator tests (pure, no Qt required)
+# ---------------------------------------------------------------------------
+
+class _ScriptedBackend:
+    """Minimal backend that times out until re-armed, then delivers frames.
+
+    ``frames_per_arm`` frames become available only after each
+    ``setup_kinetic`` + ``start`` cycle, letting tests exercise the
+    timeout / re-arm / fatal-failure paths of ``pump_frames`` deterministically.
+    """
+
+    def __init__(self, width: int = 4, frames_per_arm: int = 0) -> None:
+        self.width = width
+        self.frames_per_arm = frames_per_arm
+        self.rearm_count = 0
+        self._buffer: list[np.ndarray] = []
+        self._pending_arm = 0
+
+    def frame_width(self) -> int:
+        return self.width
+
+    def acquisition_diagnostics(self) -> str:
+        return "scripted_diag"
+
+    def wait_next_frame(self, timeout_ms: int) -> bool:
+        return bool(self._buffer)
+
+    def get_new_frames_batch(self):
+        if not self._buffer:
+            return None
+        arr = np.stack(self._buffer, axis=0)
+        self._buffer = []
+        return arr
+
+    def get_oldest_frame(self) -> np.ndarray:
+        return self._buffer.pop(0)
+
+    def setup_kinetic(self, exposure_s, n, trigger) -> None:
+        self.rearm_count += 1
+        self._pending_arm = int(n)
+
+    def start(self) -> None:
+        count = min(self.frames_per_arm, self._pending_arm)
+        self._buffer = [np.zeros(self.width, dtype=np.uint16) for _ in range(count)]
+
+
+def _bounded_running(max_calls: int = 10_000):
+    """is_running() that trips False after max_calls to avoid hanging a broken test."""
+    state = {"n": 0}
+
+    def _is_running() -> bool:
+        state["n"] += 1
+        return state["n"] <= max_calls
+
+    return _is_running
+
+
+def test_pump_frames_yields_all_requested_frames() -> None:
+    backend = MockBackend()
+    backend.connect()
+    backend.setup_kinetic(0.001, 8, TriggerMode.EXTERNAL)
+    backend.start()
+
+    errors: list[str] = []
+    batches = list(
+        pump_frames(
+            backend,
+            total_frames=8,
+            exposure_s=0.001,
+            timeout_ms=1000,
+            is_running=_bounded_running(),
+            emit_error=errors.append,
+        )
+    )
+    total = sum(b.shape[0] for b in batches)
+    assert total == 8
+    assert errors == []
+
+
+def test_pump_frames_stops_when_is_running_false() -> None:
+    backend = MockBackend()
+    backend.connect()
+    backend.setup_kinetic(0.001, 8, TriggerMode.EXTERNAL)
+    backend.start()
+
+    batches = list(
+        pump_frames(
+            backend,
+            total_frames=8,
+            exposure_s=0.001,
+            timeout_ms=1000,
+            is_running=lambda: False,
+            emit_error=lambda _m: None,
+        )
+    )
+    assert batches == []
+
+
+def test_pump_frames_rearms_after_consecutive_timeouts() -> None:
+    backend = _ScriptedBackend(frames_per_arm=4)
+
+    errors: list[str] = []
+    batches = list(
+        pump_frames(
+            backend,
+            total_frames=4,
+            exposure_s=0.001,
+            timeout_ms=1000,
+            is_running=_bounded_running(),
+            emit_error=errors.append,
+        )
+    )
+    assert sum(b.shape[0] for b in batches) == 4
+    assert backend.rearm_count >= 1
+    assert any("Re-arming" in m for m in errors)
+
+
+def test_pump_frames_calls_on_fatal_when_no_frames_arrive() -> None:
+    backend = _ScriptedBackend(frames_per_arm=0)  # never delivers
+
+    errors: list[str] = []
+    fatal = {"called": False}
+    batches = list(
+        pump_frames(
+            backend,
+            total_frames=4,
+            exposure_s=0.001,
+            timeout_ms=1000,
+            is_running=_bounded_running(),
+            emit_error=errors.append,
+            on_fatal=lambda: fatal.__setitem__("called", True),
+            error_prefix="Point (1,2): ",
+        )
+    )
+    assert batches == []
+    assert fatal["called"] is True
+    assert backend.rearm_count == _MAX_REARM_ATTEMPTS
+    assert any(m.startswith("Point (1,2): ") for m in errors)
 
 
 # ---------------------------------------------------------------------------

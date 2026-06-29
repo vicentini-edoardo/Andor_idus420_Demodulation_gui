@@ -22,12 +22,13 @@ from PyQt6.QtWidgets import (
 
 from idus420_gui.camera.andor import AndorIDusBackend
 from idus420_gui.camera.base import (
+    READ_MODE_LABELS,
+    SHUTTER_MODE_LABELS,
     CameraBackend,
     CameraConfig,
     CameraError,
     CropConfig,
     ReadMode,
-    ShutterMode,
     SingleTrackConfig,
     TempStatus,
 )
@@ -140,7 +141,7 @@ class CameraPanel(QWidget):
         config_grid.setColumnStretch(3, 1)
 
         self.read_mode_combo = QComboBox()
-        self.read_mode_combo.addItems(["FVB", "Single-Track"])
+        self.read_mode_combo.addItems(list(READ_MODE_LABELS))
 
         self.st_center_spin = QSpinBox()
         self.st_center_spin.setRange(1, 9999)
@@ -191,7 +192,7 @@ class CameraPanel(QWidget):
         self.preamp_combo = QComboBox()
 
         self.shutter_combo = QComboBox()
-        self.shutter_combo.addItems(["Permanently Open", "Auto", "Permanently Closed"])
+        self.shutter_combo.addItems(list(SHUTTER_MODE_LABELS))
 
         self.exposure_spin = QDoubleSpinBox()
         self.exposure_spin.setDecimals(6)
@@ -453,6 +454,10 @@ class CameraPanel(QWidget):
             self._set_config_enabled(True)
             self.connection_changed.emit(True)
             self.log_message.emit("Camera connected.")
+            # Push the restored/default settings to the hardware immediately so
+            # the camera does not run on SDK power-on defaults (e.g. a closed
+            # shutter) until the user happens to click Apply.
+            self._apply_config()
         except Exception as exc:  # noqa: BLE001 - slot-level user feedback.
             self.log_message.emit(f"Connection failed: {exc}")
             self.backend = None
@@ -689,15 +694,9 @@ class CameraPanel(QWidget):
             self.log_message.emit(str(exc))
 
     def current_config(self) -> CameraConfig:
-        shutter = {
-            "Permanently Open": ShutterMode.OPEN,
-            "Auto": ShutterMode.AUTO,
-            "Permanently Closed": ShutterMode.CLOSED,
-        }[self.shutter_combo.currentText()]
-        read_mode = (
-            ReadMode.SINGLE_TRACK
-            if self.read_mode_combo.currentText() == "Single-Track"
-            else ReadMode.FVB
+        shutter = SHUTTER_MODE_LABELS[self.shutter_combo.currentText()]
+        read_mode = READ_MODE_LABELS.get(
+            self.read_mode_combo.currentText(), ReadMode.FVB
         )
         return CameraConfig(
             hs_speed_index=self.hs_combo.currentIndex(),

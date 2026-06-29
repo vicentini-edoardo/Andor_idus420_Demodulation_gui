@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+
 import numpy as np
 
 from idus420_gui.camera.base import CameraBackend, TriggerMode
 
 _MAX_REARM_ATTEMPTS = 3
+_TIMEOUTS_BEFORE_REARM = 3
 
 
 def _read_ready_frames(backend: CameraBackend, max_frames: int | None = None) -> np.ndarray:
@@ -90,3 +93,69 @@ def _rearm_acquisition(
         TriggerMode.EXTERNAL,
     )
     backend.start()
+
+
+def pump_frames(
+    backend: CameraBackend,
+    *,
+    total_frames: int,
+    exposure_s: float,
+    timeout_ms: int,
+    is_running: Callable[[], bool],
+    emit_error: Callable[[str], None],
+    on_fatal: Callable[[], None] | None = None,
+    error_prefix: str = "",
+) -> Iterator[np.ndarray]:
+    """Drive the wait / read / timeout / re-arm loop for one kinetic series.
+
+    Yields batches of ready frames (each shaped ``(k, frame_width)``) until
+    ``total_frames`` frames have been delivered, ``is_running()`` returns
+    ``False``, or the camera repeatedly fails to deliver frames.  The caller is
+    responsible for calling ``setup_kinetic()`` + ``start()`` before iterating
+    and ``abort()`` afterwards.
+
+    On an unrecoverable timeout the failure message (prefixed with
+    ``error_prefix``) is sent through ``emit_error`` and, if provided,
+    ``on_fatal`` is invoked so the caller can stop any enclosing loop before the
+    generator returns.  This is the single source of truth for the polling
+    policy shared by every acquisition/scan worker.
+    """
+    acquired = 0
+    consecutive_timeouts = 0
+    rearm_attempts = 0
+    while is_running() and acquired < total_frames:
+        if backend.wait_next_frame(timeout_ms):
+            consecutive_timeouts = 0
+            rearm_attempts = 0
+            ready = _read_ready_frames(backend, total_frames - acquired)
+        else:
+            pending = _read_pending_frames(backend, total_frames - acquired)
+            if pending is not None:
+                consecutive_timeouts = 0
+                rearm_attempts = 0
+                ready = pending
+            else:
+                consecutive_timeouts += 1
+                if consecutive_timeouts < _TIMEOUTS_BEFORE_REARM:
+                    continue
+                diagnostics = backend.acquisition_diagnostics()
+                remaining = total_frames - acquired
+                if rearm_attempts < _MAX_REARM_ATTEMPTS and remaining > 0:
+                    rearm_attempts += 1
+                    emit_error(
+                        error_prefix
+                        + _rearm_message(
+                            timeout_ms, rearm_attempts, _MAX_REARM_ATTEMPTS, diagnostics
+                        )
+                    )
+                    _rearm_acquisition(backend, exposure_s, remaining)
+                    consecutive_timeouts = 0
+                    continue
+                emit_error(
+                    error_prefix + _timeout_failure_message(timeout_ms, diagnostics)
+                )
+                if on_fatal is not None:
+                    on_fatal()
+                return
+        acquired += len(ready)
+        yield ready

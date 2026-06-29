@@ -26,6 +26,15 @@ from idus420_gui.camera.base import (
 
 LOG = logging.getLogger(__name__)
 
+# TTL polarity of the shutter output line: 1 = output a TTL-high signal to open
+# the shutter, which matches the iDus internal-shutter wiring.
+_SHUTTER_TTL_TYPE = 1
+# Fallback shutter transfer time (ms) used only when the camera does not report
+# its minimum via GetShutterMinTimes.  The iDus internal mechanical shutter
+# silently refuses to actuate when given a 0 ms transfer time, so a non-zero
+# value is required for the shutter to physically move.
+_DEFAULT_SHUTTER_TRANSFER_MS = 50
+
 
 class AndorIDusBackend(CameraBackend):
     """Andor iDus backend implemented through the vendor `pyAndorSDK2` wrapper."""
@@ -189,10 +198,7 @@ class AndorIDusBackend(CameraBackend):
                 self._check(self._sdk.SetReadMode(0), "SetReadMode(FVB)")
                 self._check(self._sdk.SetFVBHBin(hbin), f"SetFVBHBin({hbin})")
             self._frame_width = xpix // hbin
-        self._check(
-            self._sdk.SetShutter(1, self._shutter_code(cfg.shutter_mode), 0, 0),
-            "SetShutter",
-        )
+        self._apply_shutter(self._shutter_code(cfg.shutter_mode))
         self._check(self._sdk.SetADChannel(cfg.ad_channel), "SetADChannel")
         self._check(self._sdk.SetOutputAmplifier(cfg.output_amplifier), "SetOutputAmplifier")
         self._check(self._sdk.SetHSSpeed(cfg.output_amplifier, cfg.hs_speed_index), "SetHSSpeed")
@@ -200,6 +206,45 @@ class AndorIDusBackend(CameraBackend):
         self._check(self._sdk.SetPreAmpGain(cfg.preamp_gain_index), "SetPreAmpGain")
         self._check(self._sdk.SetExposureTime(float(cfg.exposure_s)), "SetExposureTime")
         self._checked_tuple(self._sdk.GetAcquisitionTimings(), "GetAcquisitionTimings")
+
+    def _apply_shutter(self, mode_code: int) -> None:
+        """Drive the shutter, preferring SetShutterEx so the iDus *internal*
+        mechanical shutter actually moves.
+
+        Plain ``SetShutter`` only toggles the *external* shutter TTL output line.
+        On an iDus with an internal shutter that line drives nothing, so the
+        shutter never moves regardless of the requested mode (the SDK still
+        returns success, which is why the failure is silent).  ``SetShutterEx``
+        takes an additional ``extmode`` argument that controls the internal
+        shutter, so we set it to the same mode as the external line.  Opening and
+        closing times must be non-zero — the internal shutter rejects a 0 ms
+        transfer time and stays put — so they come from ``GetShutterMinTimes``
+        when available and from a safe default otherwise.
+        """
+        closing_ms, opening_ms = self._shutter_transfer_times()
+        if hasattr(self._sdk, "SetShutterEx"):
+            self._check(
+                self._sdk.SetShutterEx(
+                    _SHUTTER_TTL_TYPE, mode_code, closing_ms, opening_ms, mode_code
+                ),
+                "SetShutterEx",
+            )
+            return
+        self._check(
+            self._sdk.SetShutter(_SHUTTER_TTL_TYPE, mode_code, closing_ms, opening_ms),
+            "SetShutter",
+        )
+
+    def _shutter_transfer_times(self) -> tuple[int, int]:
+        """Return valid (closing_ms, opening_ms) for this camera's shutter."""
+        if hasattr(self._sdk, "GetShutterMinTimes"):
+            try:
+                ret, min_closing, min_opening = self._sdk.GetShutterMinTimes()
+                if int(ret) == self._success_code:
+                    return int(min_closing), int(min_opening)
+            except Exception:  # noqa: BLE001 - wrapper/firmware may not support it.
+                LOG.debug("GetShutterMinTimes unavailable", exc_info=True)
+        return _DEFAULT_SHUTTER_TRANSFER_MS, _DEFAULT_SHUTTER_TRANSFER_MS
 
     def setup_kinetic(
         self,
