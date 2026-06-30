@@ -265,6 +265,7 @@ class CameraPanel(QWidget):
 
         self.spectro_backend_combo = QComboBox()
         self.spectro_backend_combo.addItems(["Mock", "Andor Shamrock"])
+        self.spectro_backend_combo.setCurrentText("Andor Shamrock")
         self.spectro_connect_button = QPushButton("Connect")
         self.spectro_disconnect_button = QPushButton("Disconnect")
         self.spectro_disconnect_button.setEnabled(False)
