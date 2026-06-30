@@ -9,11 +9,16 @@ from pathlib import Path
 from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
+    QComboBox,
+    QDialog,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from idus420_gui.camera.base import AcquisitionStatus, CameraBackend, TempStatus
@@ -27,8 +32,54 @@ from idus420_gui.gui.widgets import LogView
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-class _GitPullWorker(QThread):
-    finished = pyqtSignal(int, str)  # returncode, message
+class _GitFetchWorker(QThread):
+    # (returncode, branch_list, info) — info=current_branch on success, error msg on failure
+    finished = pyqtSignal(int, object, str)
+
+    def run(self) -> None:
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(_REPO_ROOT), "fetch", "--prune"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode != 0:
+                self.finished.emit(r.returncode, [], (r.stdout + r.stderr).strip())
+                return
+
+            rb = subprocess.run(
+                ["git", "-C", str(_REPO_ROOT), "branch", "-r", "--format=%(refname:short)"],
+                capture_output=True, text=True,
+            )
+            branches: list[str] = []
+            for line in rb.stdout.splitlines():
+                line = line.strip()
+                if not line or "->" in line:
+                    continue
+                prefix = "origin/"
+                b = line[len(prefix):] if line.startswith(prefix) else line
+                if b not in branches:
+                    branches.append(b)
+
+            cur = subprocess.run(
+                ["git", "-C", str(_REPO_ROOT), "branch", "--show-current"],
+                capture_output=True, text=True,
+            ).stdout.strip()
+
+            if cur in branches:
+                branches.remove(cur)
+                branches.insert(0, cur)
+
+            self.finished.emit(0, branches, cur)
+        except Exception as exc:
+            self.finished.emit(-1, [], str(exc))
+
+
+class _GitSwitchWorker(QThread):
+    finished = pyqtSignal(int, str)  # returncode, output/changelog
+
+    def __init__(self, branch: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._branch = branch
 
     def run(self) -> None:
         try:
@@ -38,11 +89,19 @@ class _GitPullWorker(QThread):
             ).stdout.strip()
 
             r = subprocess.run(
-                ["git", "-C", str(_REPO_ROOT), "pull"],
+                ["git", "-C", str(_REPO_ROOT), "checkout", self._branch],
                 capture_output=True, text=True, timeout=30,
             )
             if r.returncode != 0:
                 self.finished.emit(r.returncode, (r.stdout + r.stderr).strip())
+                return
+
+            r2 = subprocess.run(
+                ["git", "-C", str(_REPO_ROOT), "pull"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r2.returncode != 0:
+                self.finished.emit(r2.returncode, (r2.stdout + r2.stderr).strip())
                 return
 
             log = subprocess.run(
@@ -51,12 +110,41 @@ class _GitPullWorker(QThread):
                 capture_output=True, text=True,
             ).stdout.strip()
 
-            if log:
-                self.finished.emit(0, log)
-            else:
-                self.finished.emit(0, "Already up to date.")
+            self.finished.emit(0, log if log else "Already up to date.")
         except Exception as exc:
             self.finished.emit(-1, str(exc))
+
+
+class _BranchDialog(QDialog):
+    def __init__(self, branches: list[str], current: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Select Branch")
+        self.setMinimumWidth(300)
+
+        self._combo = QComboBox()
+        for b in branches:
+            self._combo.addItem(b)
+        idx = self._combo.findText(current)
+        if idx >= 0:
+            self._combo.setCurrentIndex(idx)
+
+        btn_ok = QPushButton("Update")
+        btn_ok.setProperty("accent", True)
+        btn_cancel = QPushButton("Cancel")
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel.clicked.connect(self.reject)
+
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(btn_ok)
+        btn_row.addWidget(btn_cancel)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Select branch to switch to and pull:"))
+        layout.addWidget(self._combo)
+        layout.addLayout(btn_row)
+
+    def selected_branch(self) -> str:
+        return self._combo.currentText()
 
 
 class MainWindow(QMainWindow):
@@ -90,7 +178,8 @@ class MainWindow(QMainWindow):
         self.acquisition_label.setObjectName("acquisition_label")
         self.acquisition_label.setProperty("running", "false")
         self.log_view = LogView()
-        self._pull_worker: _GitPullWorker | None = None
+        self._fetch_worker: _GitFetchWorker | None = None
+        self._switch_worker: _GitSwitchWorker | None = None
         self.statusBar().addWidget(self.connection_label)
         # The Update button does `git pull` + restart, which only makes sense
         # when the app runs from a source checkout; hide it for installed copies.
@@ -218,12 +307,34 @@ class MainWindow(QMainWindow):
         if self._update_btn is None:
             return
         self._update_btn.setEnabled(False)
-        self._update_btn.setText("Updating…")
-        self._pull_worker = _GitPullWorker()
-        self._pull_worker.finished.connect(self._on_pull_done)
-        self._pull_worker.start()
+        self._update_btn.setText("Fetching…")
+        self._fetch_worker = _GitFetchWorker()
+        self._fetch_worker.finished.connect(self._on_fetch_done)
+        self._fetch_worker.start()
 
-    def _on_pull_done(self, returncode: int, output: str) -> None:
+    def _on_fetch_done(self, returncode: int, branches: object, info: str) -> None:
+        if self._update_btn is not None:
+            self._update_btn.setEnabled(True)
+            self._update_btn.setText("Update")
+        if returncode != 0:
+            QMessageBox.warning(self, "Update", f"Fetch failed:\n{info}")
+            return
+        branch_list: list = branches  # type: ignore[assignment]
+        if not branch_list:
+            QMessageBox.information(self, "Update", "No remote branches found.")
+            return
+        dlg = _BranchDialog(branch_list, info, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        selected = dlg.selected_branch()
+        if self._update_btn is not None:
+            self._update_btn.setEnabled(False)
+            self._update_btn.setText("Updating…")
+        self._switch_worker = _GitSwitchWorker(selected, self)
+        self._switch_worker.finished.connect(self._on_switch_done)
+        self._switch_worker.start()
+
+    def _on_switch_done(self, returncode: int, output: str) -> None:
         if self._update_btn is not None:
             self._update_btn.setEnabled(True)
             self._update_btn.setText("Update")
