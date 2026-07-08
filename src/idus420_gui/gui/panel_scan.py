@@ -336,7 +336,14 @@ class ScanPanel(QWidget):
 
         self.spectrum_widget = pg.GraphicsLayoutWidget()
         self.spectrum_widget.setBackground(theme.BG)
-        self.spectrum_plot = self.spectrum_widget.addPlot(row=0, col=0, title="Latest spectrum")
+        self.roi_fft_plot = self.spectrum_widget.addPlot(row=0, col=0, title="ROI FFT")
+        theme._style_plot_item(self.roi_fft_plot)  # noqa: SLF001
+        self.roi_fft_plot.setLabel("bottom", "Frequency (Hz)")
+        self.roi_fft_plot.setLabel("left", "Magnitude")
+        self.roi_fft_curve = self.roi_fft_plot.plot(
+            pen=pg.mkPen(theme.CURVE_MAGENTA, width=1.5)
+        )
+        self.spectrum_plot = self.spectrum_widget.addPlot(row=0, col=1, title="Latest spectrum")
         theme._style_plot_item(self.spectrum_plot)  # noqa: SLF001
         self.spectrum_plot.setLabel("bottom", "Pixel")
         self.spectrum_plot.setLabel("left", "Counts")
@@ -583,6 +590,7 @@ class ScanPanel(QWidget):
 
         self._scan_is_line = (nx == 1 or ny == 1)
         self._rebuild_plots(nx, ny, grid)
+        self.roi_fft_curve.setData([], [])
         self.spectrum_curve.setData([], [])
         self.progress.setMaximum(grid.total_points())
         self.progress.setValue(0)
@@ -718,8 +726,18 @@ class ScanPanel(QWidget):
             self._render_avg_slot()
         else:
             self._render_demod_slots()
+        self._render_latest_roi_fft(result)
         self._render_latest_spectrum(result)
         self._render_snom_slots()
+
+    def _render_latest_roi_fft(self, result: PointResult) -> None:
+        y = np.asarray(result.roi_timeseries, dtype=np.float64)
+        if y.size == 0:
+            return
+        sample_rate = max(float(self.demod_source.settings().trigger_frequency_hz), 1e-9)
+        f = np.fft.rfftfreq(y.size, d=1.0 / sample_rate)
+        spectrum = np.abs(np.fft.rfft(y)) * 2.0 / y.size
+        self.roi_fft_curve.setData(f, spectrum)
 
     def _render_latest_spectrum(self, result: PointResult) -> None:
         if result.frames.size == 0:

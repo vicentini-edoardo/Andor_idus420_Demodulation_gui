@@ -107,6 +107,27 @@ def test_scan_panel_plots_latest_point_spectrum(qtbot) -> None:  # type: ignore[
     assert panel.spectrum_curve.getData()[1].tolist() == [4.0, 5.0, 6.0]
 
 
+def test_scan_panel_plots_latest_point_roi_fft(qtbot) -> None:  # type: ignore[no-untyped-def]
+    demod, panel = _make_panels()
+    demod.trigger_spin.setValue(4.0)
+    panel._map_demod = {key: np.full((1, 1), np.nan) for key in _DEMOD_CHANNELS}
+    panel._map_snom = {key: np.full((1, 1), np.nan) for key in _SNOM_CHANNELS}
+    result = PointResult(
+        point=StagePoint(ix=0, iy=0, x_nm=0.0, y_nm=0.0),
+        actual_xyz_nm=(0.0, 0.0, 0.0),
+        frames=np.array([[1.0, 2.0, 3.0]]),
+        roi_timeseries=np.array([0.0, 1.0, 0.0, -1.0]),
+        demod_results=[],
+        snom_samples=[],
+    )
+
+    panel._on_point_data(0, result)
+
+    x, y = panel.roi_fft_curve.getData()
+    assert x.tolist() == [0.0, 1.0, 2.0]
+    assert y.tolist() == pytest.approx([0.0, 1.0, 0.0])
+
+
 @pytest.mark.skipif(
     not NEA_TOOLS_AVAILABLE,
     reason="ScanPanel.start() requires the nea_tools SNOM stage backend.",
