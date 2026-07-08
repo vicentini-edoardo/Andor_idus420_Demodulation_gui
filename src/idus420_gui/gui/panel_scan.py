@@ -124,6 +124,8 @@ class ScanPanel(QWidget):
 
     def set_wavelength_axis(self, axis: object) -> None:
         self._wavelength_axis = axis
+        label = "Wavelength (nm)" if axis is not None else "Pixel"
+        self.spectrum_plot.setLabel("bottom", label)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -331,6 +333,17 @@ class ScanPanel(QWidget):
         plot_lay = QVBoxLayout(plot_container)
         plot_lay.setContentsMargins(4, 4, 4, 4)
         plot_lay.setSpacing(2)
+
+        self.spectrum_widget = pg.GraphicsLayoutWidget()
+        self.spectrum_widget.setBackground(theme.BG)
+        self.spectrum_plot = self.spectrum_widget.addPlot(row=0, col=0, title="Latest spectrum")
+        theme._style_plot_item(self.spectrum_plot)  # noqa: SLF001
+        self.spectrum_plot.setLabel("bottom", "Pixel")
+        self.spectrum_plot.setLabel("left", "Counts")
+        self.spectrum_curve = self.spectrum_plot.plot(
+            pen=pg.mkPen(theme.CURVE_CYAN, width=1.5)
+        )
+        plot_lay.addWidget(self.spectrum_widget, stretch=1)
 
         # -- Demod section (hidden when frames/point == 1) --
         self.demod_section = QWidget()
@@ -570,6 +583,7 @@ class ScanPanel(QWidget):
 
         self._scan_is_line = (nx == 1 or ny == 1)
         self._rebuild_plots(nx, ny, grid)
+        self.spectrum_curve.setData([], [])
         self.progress.setMaximum(grid.total_points())
         self.progress.setValue(0)
 
@@ -704,7 +718,18 @@ class ScanPanel(QWidget):
             self._render_avg_slot()
         else:
             self._render_demod_slots()
+        self._render_latest_spectrum(result)
         self._render_snom_slots()
+
+    def _render_latest_spectrum(self, result: PointResult) -> None:
+        if result.frames.size == 0:
+            return
+        y = np.asarray(result.frames[-1], dtype=np.float64)
+        x = np.asarray(self._wavelength_axis, dtype=np.float64)
+        if x.shape == y.shape:
+            self.spectrum_curve.setData(x, y)
+        else:
+            self.spectrum_curve.setData(y)
 
     def _render_demod_slots(self) -> None:
         """Repaint both demod plot slots from the stored harmonic maps."""

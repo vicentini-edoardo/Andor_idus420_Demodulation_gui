@@ -56,3 +56,4 @@ CLAUDE.md
 
 # graphify output
 graphify-out/
+.claude/settings.local.json

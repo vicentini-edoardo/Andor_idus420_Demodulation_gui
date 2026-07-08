@@ -4,11 +4,19 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
+import numpy as np
 from PyQt6.QtCore import QSettings
 
 from idus420_gui.camera.mock import MockBackend
 from idus420_gui.gui.panel_demod import DemodPanel
-from idus420_gui.gui.panel_scan import NEA_TOOLS_AVAILABLE, ScanPanel
+from idus420_gui.motion.base import StagePoint
+from idus420_gui.gui.panel_scan import (
+    NEA_TOOLS_AVAILABLE,
+    ScanPanel,
+    _DEMOD_CHANNELS,
+    _SNOM_CHANNELS,
+)
+from idus420_gui.workers.scan import PointResult
 
 
 def _make_panels():
@@ -79,6 +87,24 @@ def test_total_label_updates(qtbot) -> None:  # type: ignore[no-untyped-def]
 def test_stop_without_worker_does_not_crash(qtbot) -> None:  # type: ignore[no-untyped-def]
     _, panel = _make_panels()
     panel.stop()
+
+
+def test_scan_panel_plots_latest_point_spectrum(qtbot) -> None:  # type: ignore[no-untyped-def]
+    _, panel = _make_panels()
+    panel._map_demod = {key: np.full((1, 1), np.nan) for key in _DEMOD_CHANNELS}
+    panel._map_snom = {key: np.full((1, 1), np.nan) for key in _SNOM_CHANNELS}
+    result = PointResult(
+        point=StagePoint(ix=0, iy=0, x_nm=0.0, y_nm=0.0),
+        actual_xyz_nm=(0.0, 0.0, 0.0),
+        frames=np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+        roi_timeseries=np.array([6.0, 15.0]),
+        demod_results=[],
+        snom_samples=[],
+    )
+
+    panel._on_point_data(0, result)
+
+    assert panel.spectrum_curve.getData()[1].tolist() == [4.0, 5.0, 6.0]
 
 
 @pytest.mark.skipif(
