@@ -24,7 +24,7 @@ import numpy as np
 from idus420_gui.motion.base import SnomSample, StageBackend, StageError
 
 _N_HARMONICS = 6
-_DEFAULT_SPEED_UM_S = 0.2
+_DEFAULT_SPEED_UM_S = 1.0
 _MOVE_POLL_S = 0.1
 _MOVE_TIMEOUT_S = 300.0
 
