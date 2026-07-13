@@ -227,6 +227,7 @@ def save_scan_h5(
         "nx": grid.nx,
         "ny": grid.ny,
         "order": grid.order,
+        "angle_deg": grid.angle_deg,
     }
 
     tmp_path = path.parent / (path.name + ".tmp")
