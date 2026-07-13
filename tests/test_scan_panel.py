@@ -9,13 +9,13 @@ from PyQt6.QtCore import QSettings
 
 from idus420_gui.camera.mock import MockBackend
 from idus420_gui.gui.panel_demod import DemodPanel
-from idus420_gui.motion.base import StagePoint
 from idus420_gui.gui.panel_scan import (
-    NEA_TOOLS_AVAILABLE,
-    ScanPanel,
     _DEMOD_CHANNELS,
     _SNOM_CHANNELS,
+    NEA_TOOLS_AVAILABLE,
+    ScanPanel,
 )
+from idus420_gui.motion.base import StagePoint
 from idus420_gui.workers.scan import PointResult
 
 
@@ -84,6 +84,19 @@ def test_total_label_updates(qtbot) -> None:  # type: ignore[no-untyped-def]
     assert "12" in panel.total_label.text()
 
 
+def test_scan_time_estimate_uses_planned_path(qtbot) -> None:  # type: ignore[no-untyped-def]
+    demod, panel = _make_panels()
+    demod.trigger_spin.setValue(500.0)
+    panel.x_length.setValue(2.0)
+    panel.y_length.setValue(2.0)
+    panel.nx.setValue(2)
+    panel.ny.setValue(2)
+    panel.order_combo.setCurrentIndex(0)  # snake
+    panel.frames_per_point.setValue(1)
+
+    assert panel.est_time_label.text() == "Est. time: 0:04"
+
+
 def test_stop_without_worker_does_not_crash(qtbot) -> None:  # type: ignore[no-untyped-def]
     _, panel = _make_panels()
     panel.stop()
@@ -126,6 +139,24 @@ def test_scan_panel_plots_latest_point_roi_fft(qtbot) -> None:  # type: ignore[n
     x, y = panel.roi_fft_curve.getData()
     assert x.tolist() == [0.0, 1.0, 2.0]
     assert y.tolist() == pytest.approx([0.0, 1.0, 0.0])
+
+
+def test_scan_panel_roi_fft_keeps_dc_amplitude(qtbot) -> None:  # type: ignore[no-untyped-def]
+    _, panel = _make_panels()
+    panel._map_demod = {key: np.full((1, 1), np.nan) for key in _DEMOD_CHANNELS}
+    panel._map_snom = {key: np.full((1, 1), np.nan) for key in _SNOM_CHANNELS}
+    result = PointResult(
+        point=StagePoint(ix=0, iy=0, x_nm=0.0, y_nm=0.0),
+        actual_xyz_nm=(0.0, 0.0, 0.0),
+        frames=np.array([[1.0]]),
+        roi_timeseries=np.full(4, 7.0),
+        demod_results=[],
+        snom_samples=[],
+    )
+
+    panel._on_point_data(0, result)
+
+    assert panel.roi_fft_curve.getData()[1][0] == pytest.approx(7.0)
 
 
 @pytest.mark.skipif(

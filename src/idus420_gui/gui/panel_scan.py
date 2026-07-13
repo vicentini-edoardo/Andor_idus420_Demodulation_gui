@@ -45,7 +45,7 @@ except ImportError:
 _SETTINGS_KEY_PREFIX = "scan_panel"
 
 # Stage timing constants mirroring motion/nea_snom.py (kept local to avoid importing the NEA module)
-_EST_STAGE_SPEED_UM_S = 0.2       # µm/s, matches _DEFAULT_SPEED_UM_S
+_EST_STAGE_SPEED_UM_S = 1.0       # µm/s, matches _DEFAULT_SPEED_UM_S
 _EST_MOVE_OVERHEAD_S = 0.325      # poll(0.1) + settle(0.2) + read_xyz(0.025)
 
 # harmonic key → (plot title, colormap, value label, index into demod_results)
@@ -736,7 +736,11 @@ class ScanPanel(QWidget):
             return
         sample_rate = max(float(self.demod_source.settings().trigger_frequency_hz), 1e-9)
         f = np.fft.rfftfreq(y.size, d=1.0 / sample_rate)
-        spectrum = np.abs(np.fft.rfft(y)) * 2.0 / y.size
+        spectrum = np.abs(np.fft.rfft(y)) / y.size
+        if y.size % 2 == 0:
+            spectrum[1:-1] *= 2.0
+        else:
+            spectrum[1:] *= 2.0
         self.roi_fft_curve.setData(f, spectrum)
 
     def _render_latest_spectrum(self, result: PointResult) -> None:
@@ -945,8 +949,8 @@ class ScanPanel(QWidget):
         nx, ny = self.nx.value(), self.ny.value()
         n = nx * ny
         self.total_label.setText(f"Total: {n} points")
-        _, x_step = self._axis_grid(self.x_center.value(), self.x_length.value(), nx)
-        _, y_step = self._axis_grid(self.y_center.value(), self.y_length.value(), ny)
+        x_start, x_step = self._axis_grid(self.x_center.value(), self.x_length.value(), nx)
+        y_start, y_step = self._axis_grid(self.y_center.value(), self.y_length.value(), ny)
         self.x_res_label.setText(f"Res: {x_step:.1f} nm")
         self.y_res_label.setText(f"Res: {y_step:.1f} nm")
 
@@ -957,9 +961,21 @@ class ScanPanel(QWidget):
         except Exception:
             trig_hz = 0.0
         t_acq = frames / trig_hz if trig_hz > 0 else 0.0
-        step_um = x_step / 1000.0
-        t_move = step_um / _EST_STAGE_SPEED_UM_S + _EST_MOVE_OVERHEAD_S
-        t_total = n * (t_move + t_acq)
+        points = list(ScanGrid(
+            x_start_nm=x_start,
+            y_start_nm=y_start,
+            x_step_nm=x_step,
+            y_step_nm=y_step,
+            nx=nx,
+            ny=ny,
+            order=self.order_combo.currentData(),
+            angle_deg=self.angle.value(),
+        ).points())
+        travel_um = sum(
+            np.hypot(curr.x_nm - prev.x_nm, curr.y_nm - prev.y_nm)
+            for prev, curr in zip(points, points[1:], strict=False)
+        ) / 1000.0
+        t_total = travel_um / _EST_STAGE_SPEED_UM_S + n * (t_acq + _EST_MOVE_OVERHEAD_S)
         self.est_time_label.setText(f"Est. time: {self._fmt_duration(t_total)}")
 
     def _choose_directory(self) -> None:

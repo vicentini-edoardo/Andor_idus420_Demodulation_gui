@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -149,7 +150,12 @@ def test_scan_save_h5_groups(qtbot) -> None:  # type: ignore[no-untyped-def]
     camera = MockBackend()
     camera.connect()
     stage = MockStageBackend()
-    grid = _make_grid(nx=2, ny=2)
+    grid = ScanGrid(
+        x_start_nm=0.0, y_start_nm=0.0,
+        x_step_nm=1000.0, y_step_nm=1000.0,
+        nx=2, ny=2,
+        angle_deg=12.5,
+    )
     settings = _make_settings(n_block=8)
 
     scan_results: list[ScanResult] = []
@@ -166,6 +172,8 @@ def test_scan_save_h5_groups(qtbot) -> None:  # type: ignore[no-untyped-def]
         save_scan_h5(path, scan_results[0], {"test": True})
         assert path.exists()
         with h5py.File(path, "r") as f:
+            metadata = json.loads(f.attrs["metadata"])
+            assert metadata["grid"]["angle_deg"] == pytest.approx(12.5)
             assert "scan" in f
             assert "points" in f
             assert f["scan/coords_xy_nm"].shape == (4, 2)
