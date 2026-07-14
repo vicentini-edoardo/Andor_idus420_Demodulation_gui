@@ -973,7 +973,7 @@ class ScanPanel(QWidget):
         ).points())
         travel_um = sum(
             np.hypot(curr.x_nm - prev.x_nm, curr.y_nm - prev.y_nm)
-            for prev, curr in zip(points, points[1:], strict=False)
+            for prev, curr in zip(points, points[1:])
         ) / 1000.0
         t_total = travel_um / _EST_STAGE_SPEED_UM_S + n * (t_acq + _EST_MOVE_OVERHEAD_S)
         self.est_time_label.setText(f"Est. time: {self._fmt_duration(t_total)}")
