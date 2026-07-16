@@ -69,6 +69,9 @@ class LiveSpectrumPanel(QWidget):
     def set_exposure(self, value: float) -> None:
         self.exposure_spin.setValue(value)
 
+    def set_trigger_frequency(self, value: float) -> None:
+        self.trigger_spin.setValue(value)
+
     def set_wavelength_axis(self, axis: object) -> None:
         """Accept a calibrated wavelength array (nm per pixel) or None to reset."""
         import numpy as _np
@@ -125,6 +128,7 @@ class LiveSpectrumPanel(QWidget):
 
         self.trigger_spin = QDoubleSpinBox()
         self.trigger_spin.setRange(0.001, 1_000_000)
+        self.trigger_spin.setDecimals(6)
         self.trigger_spin.setValue(500.0)
         self.trigger_spin.setSuffix(" Hz")
 

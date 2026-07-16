@@ -26,9 +26,15 @@ from PyQt6.QtWidgets import (
 from idus420_gui.camera.base import CameraBackend
 from idus420_gui.gui import theme
 from idus420_gui.gui.panel_demod import DemodPanel
-from idus420_gui.io.rp_state import load_rp_metadata
+from idus420_gui.io.rp_state import (
+    RedPitayaState,
+    RPStateError,
+    default_rp_state_path,
+    load_rp_state,
+    rp_run_metadata,
+)
 from idus420_gui.io.save import save_h5, save_npz, save_txt
-from idus420_gui.workers.acquisition import AcquisitionWorker, DemodulationSettings
+from idus420_gui.workers.acquisition import AcquisitionWorker
 
 _SETTINGS_KEY_PREFIX = "acquire_panel"
 
@@ -111,7 +117,7 @@ class AcquisitionPanel(QWidget):
         format_col.addWidget(self.save_sif_cb)
 
         self.rp_state_cb = QCheckBox("Include RP state")
-        self.rp_state_path = QLineEdit()
+        self.rp_state_path = QLineEdit(str(default_rp_state_path()))
         self.rp_state_path.setReadOnly(True)
         self.rp_state_path.setPlaceholderText("rp_state.json path…")
         self.rp_state_browse = QPushButton("Browse")
@@ -205,7 +211,16 @@ class AcquisitionPanel(QWidget):
             return
         if not self.demod_source.validate_roi():
             return
-        settings: DemodulationSettings = self.demod_source.settings()
+        try:
+            settings, synced_state = self.demod_source.settings_for_run()
+            rp_start: RedPitayaState | None = synced_state
+            rp_path = self.demod_source.rp_state_path.text() if synced_state else ""
+            if rp_start is None and self.rp_state_cb.isChecked():
+                rp_path = self.rp_state_path.text()
+                rp_start = load_rp_state(rp_path, max_age_s=3.0)
+        except (RPStateError, ValueError) as exc:
+            self.log_message.emit(str(exc))
+            return
         total_frames = self.total_frames.value() if self.use_frames.isChecked() else None
         total_seconds = None if self.use_frames.isChecked() else float(self.duration_s.value())
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -213,6 +228,9 @@ class AcquisitionPanel(QWidget):
         stem = f"{self.stem.text()}_{timestamp}"
         self._pending_stem = stem
         self._pending_timestamp = timestamp
+        self._pending_settings = settings
+        self._pending_rp_start = rp_start
+        self._pending_rp_path = rp_path
         sif_path = str(out_dir / f"{stem}.sif") if self.save_sif_cb.isChecked() else None
         self.worker = AcquisitionWorker(
             self.backend, settings, total_seconds, total_frames, sif_path=sif_path
@@ -238,7 +256,7 @@ class AcquisitionPanel(QWidget):
         stem = getattr(self, "_pending_stem", None) or now
         timestamp = getattr(self, "_pending_timestamp", None) or now
         out_dir = Path(self.output_dir.text())
-        settings = self.demod_source.settings()
+        settings = getattr(self, "_pending_settings", self.demod_source.settings())
         metadata = {
             "software": "idus420_gui",
             "timestamp": timestamp,
@@ -255,13 +273,14 @@ class AcquisitionPanel(QWidget):
             "f_search_halfwidth_hz": settings.f_search_halfwidth,
             "window": settings.window,
         }
-        if self.rp_state_cb.isChecked() and self.rp_state_path.text():
-            rp = load_rp_metadata(self.rp_state_path.text())
-            if rp is None:
-                p = self.rp_state_path.text()
-                self.log_message.emit(f"Warning: could not read RP state from {p!r} — skipping.")
-            else:
-                metadata.update(rp)
+        rp_start = getattr(self, "_pending_rp_start", None)
+        if rp_start is not None:
+            try:
+                rp_end = load_rp_state(self._pending_rp_path, max_age_s=3.0)
+            except RPStateError as exc:
+                rp_end = None
+                self.log_message.emit(f"Warning: could not verify final RP state: {exc}")
+            metadata.update(rp_run_metadata(rp_start, rp_end))
         roi_ts = processed["roi_timeseries"]  # type: ignore[index]
         results = processed["demod_results"]  # type: ignore[index]
         frame_times = processed.get("frame_times_s")  # type: ignore[attr-defined]

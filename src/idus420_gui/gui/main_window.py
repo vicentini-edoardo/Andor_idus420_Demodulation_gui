@@ -209,6 +209,7 @@ class MainWindow(QMainWindow):
         self.camera_panel.wavelength_axis_changed.connect(self.scan_panel.set_wavelength_axis)
         self.live_panel.log_message.connect(self.log)
         self.demod_panel.log_message.connect(self.log)
+        self.demod_panel.rp_trigger_synced.connect(self.live_panel.set_trigger_frequency)
         self.acquire_panel.log_message.connect(self.log)
         self.live_panel.running_changed.connect(self._running_changed)
         self.demod_panel.running_changed.connect(self._running_changed)
@@ -271,6 +272,7 @@ class MainWindow(QMainWindow):
 
     def _running_changed(self, running: bool) -> None:
         self.acquisition_running = running
+        self.demod_panel.set_external_running(running)
         self.acquisition_label.setText("Running" if running else "Idle")
         self.acquisition_label.setProperty("running", "true" if running else "false")
         self.acquisition_label.style().unpolish(self.acquisition_label)

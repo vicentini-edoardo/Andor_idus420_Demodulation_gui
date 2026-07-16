@@ -70,8 +70,15 @@ Use the **Mock** backend unless the camera and Andor SDK are available on the ma
 ### Demodulation Alignment
 
 - Set trigger frequency and ROI bounds
+- Optionally enable **Follow confirmed state while idle** to read the Red Pitaya's
+  actual DIO2 trigger frequency and register-derived FFT target automatically
 - Run continuous ROI demodulation over a rolling (sliding) window of the last `Frames / FFT block` samples
 - Inspect FFT peak amplitude and frequency in real time, updated as each new frame slides into the window
+
+When Red Pitaya synchronization is enabled, acquisition starts only from a fresh,
+connected, hardware-confirmed, modulated and period-stable state. The app also checks
+the FFT Nyquist limit and camera trigger-rate limit. Acquisition and scan files contain
+the confirmed start/end states and `rp_state_changed_during_run`.
 
 ### Acquisition
 

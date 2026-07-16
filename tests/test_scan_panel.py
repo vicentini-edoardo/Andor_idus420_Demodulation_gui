@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import time
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("PyQt6")
@@ -17,6 +21,50 @@ from idus420_gui.gui.panel_scan import (
 )
 from idus420_gui.motion.base import StagePoint
 from idus420_gui.workers.scan import PointResult
+
+
+class _Signal:
+    def connect(self, _slot) -> None:  # type: ignore[no-untyped-def]
+        pass
+
+
+class _FakeScanWorker:
+    point_started = _Signal()
+    point_finished = _Signal()
+    point_data_ready = _Signal()
+    scan_finished = _Signal()
+    error = _Signal()
+    worker_finished = _Signal()
+
+    def __init__(self, _camera, _stage, _grid, settings, metadata) -> None:  # type: ignore[no-untyped-def]
+        self.settings = settings
+        self.metadata = metadata
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+
+
+def _write_rp_state(path: Path) -> None:
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "source": "redpitaya_ttl_frequency_divider",
+        "connected": True,
+        "hardware_confirmed": True,
+        "sequence": 1,
+        "updated_at": time.time(),
+        "mode": "pulse",
+        "output_mode": "modulated",
+        "period_stable": True,
+        "trigger_frequency_hz": 500.0,
+        "frequency_shift_hz": 37.0,
+        "expected_peak_hz": 37.0,
+        "control": 1,
+        "harmonic_n": 1,
+        "trig_phase_step": 1125899915,
+        "phase_step_offset": 83316594,
+        "osc_half_period": 0,
+    }), encoding="utf-8")
 
 
 def _make_panels():
@@ -100,6 +148,37 @@ def test_scan_time_estimate_uses_planned_path(qtbot) -> None:  # type: ignore[no
 def test_stop_without_worker_does_not_crash(qtbot) -> None:  # type: ignore[no-untyped-def]
     _, panel = _make_panels()
     panel.stop()
+
+
+@pytest.mark.filterwarnings("ignore:All-NaN slice encountered:RuntimeWarning")
+def test_scan_snapshots_rp_state_before_worker_start(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    import idus420_gui.gui.panel_scan as scan_module
+
+    QSettings("idus420_gui", "ScanPanel").clear()
+    QSettings("idus420_gui", "DemodPanel").clear()
+    demod, panel = _make_panels()
+    backend = MockBackend()
+    backend.connect()
+    demod.set_backend(backend)
+    panel.set_backend(backend)
+    panel.nx.setValue(1)
+    panel.ny.setValue(1)
+    path = tmp_path / "rp_state.json"
+    _write_rp_state(path)
+    panel.rp_state_cb.setChecked(True)
+    panel.rp_state_path.setText(str(path))
+    monkeypatch.setattr(scan_module, "NEA_TOOLS_AVAILABLE", True)
+    monkeypatch.setattr(scan_module, "NeaSnomBackend", lambda: object())
+    monkeypatch.setattr(scan_module, "ScanWorker", _FakeScanWorker)
+
+    panel.start()
+
+    assert panel.worker is not None
+    assert panel.worker.started
+    assert panel._pending_rp_start.expected_peak_hz == 37.0  # noqa: SLF001
+    assert panel.worker.metadata["rp_expected_peak_hz"] == 37.0
 
 
 def test_scan_panel_plots_latest_point_spectrum(qtbot) -> None:  # type: ignore[no-untyped-def]

@@ -44,7 +44,9 @@ class RedPitayaState:
             self.output_mode,
             self.control,
             self.harmonic_n,
+            self.raw.get("width_cycles"),
             self.osc_half_period,
+            self.raw.get("osc_phase_preload"),
             self.trig_phase_step,
             self.phase_step_offset,
         )
@@ -176,6 +178,16 @@ def load_rp_state(
 
 def rp_state_changed(start: RedPitayaState, end: RedPitayaState) -> bool:
     return start.configuration_signature != end.configuration_signature
+
+
+def rp_run_metadata(
+    start: RedPitayaState, end: RedPitayaState | None
+) -> dict[str, Any]:
+    metadata = start.metadata()
+    if end is not None:
+        metadata.update(end.metadata("rp_end_"))
+    metadata["rp_state_changed_during_run"] = end is None or rp_state_changed(start, end)
+    return metadata
 
 
 def load_rp_metadata(path: str | Path) -> dict[str, Any] | None:

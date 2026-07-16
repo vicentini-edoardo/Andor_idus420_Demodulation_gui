@@ -10,6 +10,7 @@ from idus420_gui.io.rp_state import (
     default_rp_state_path,
     load_rp_metadata,
     load_rp_state,
+    rp_run_metadata,
     rp_state_changed,
 )
 
@@ -32,8 +33,10 @@ def _state(**overrides):
         "output_frequency_hz": 999_963.0,
         "control": 1,
         "harmonic_n": 1,
+        "width_cycles": 62,
         "trig_phase_step": 1125899915,
         "phase_step_offset": -83316594,
+        "osc_phase_preload": 0,
         "phase_step_base": 2251799833685,
         "phase_step": 2251716517091,
         "osc_half_period": 0,
@@ -102,9 +105,11 @@ def test_configuration_change_ignores_heartbeat_fields(tmp_path: Path) -> None:
     changed = load_rp_state(
         _write(tmp_path / "changed.json", trig_phase_step=1125899916)
     )
+    duty_changed = load_rp_state(_write(tmp_path / "duty.json", width_cycles=63))
 
     assert not rp_state_changed(start, same)
     assert rp_state_changed(start, changed)
+    assert rp_state_changed(start, duty_changed)
 
 
 def test_metadata_uses_confirmed_contract_fields(tmp_path: Path) -> None:
@@ -116,3 +121,21 @@ def test_metadata_uses_confirmed_contract_fields(tmp_path: Path) -> None:
     assert metadata["rp_schema_version"] == 1
     assert metadata["rp_trigger_frequency_hz"] == 500.0
     assert metadata["rp_expected_peak_hz"] == 37.0
+
+
+def test_run_metadata_compares_start_and_end_configuration(tmp_path: Path) -> None:
+    start = load_rp_state(_write(tmp_path / "start.json"))
+    same = load_rp_state(_write(tmp_path / "same.json", sequence=13, updated_at=101.0))
+    changed = load_rp_state(
+        _write(tmp_path / "changed.json", phase_step_offset=-83316595)
+    )
+
+    same_meta = rp_run_metadata(start, same)
+    changed_meta = rp_run_metadata(start, changed)
+    unknown_meta = rp_run_metadata(start, None)
+
+    assert same_meta["rp_state_changed_during_run"] is False
+    assert changed_meta["rp_state_changed_during_run"] is True
+    assert unknown_meta["rp_state_changed_during_run"] is True
+    assert same_meta["rp_sequence"] == 12
+    assert same_meta["rp_end_sequence"] == 13

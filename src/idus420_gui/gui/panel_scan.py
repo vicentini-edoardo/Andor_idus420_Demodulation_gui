@@ -31,7 +31,13 @@ from PyQt6.QtWidgets import (
 from idus420_gui.camera.base import CameraBackend
 from idus420_gui.gui import theme
 from idus420_gui.gui.panel_demod import DemodPanel
-from idus420_gui.io.rp_state import load_rp_metadata
+from idus420_gui.io.rp_state import (
+    RedPitayaState,
+    RPStateError,
+    default_rp_state_path,
+    load_rp_state,
+    rp_run_metadata,
+)
 from idus420_gui.io.save import save_scan_h5
 from idus420_gui.motion.base import ScanGrid
 from idus420_gui.workers.scan import PointResult, ScanResult, ScanWorker
@@ -287,7 +293,7 @@ class ScanPanel(QWidget):
         self.stem = QLineEdit("snom_scan")
 
         self.rp_state_cb = QCheckBox("Include RP state")
-        self.rp_state_path = QLineEdit()
+        self.rp_state_path = QLineEdit(str(default_rp_state_path()))
         self.rp_state_path.setReadOnly(True)
         self.rp_state_path.setPlaceholderText("rp_state.json path…")
         self.rp_state_browse = QPushButton("Browse")
@@ -526,6 +532,16 @@ class ScanPanel(QWidget):
             return
         if not self.demod_source.validate_roi():
             return
+        try:
+            settings, synced_state = self.demod_source.settings_for_run()
+            rp_start: RedPitayaState | None = synced_state
+            rp_path = self.demod_source.rp_state_path.text() if synced_state else ""
+            if rp_start is None and self.rp_state_cb.isChecked():
+                rp_path = self.rp_state_path.text()
+                rp_start = load_rp_state(rp_path, max_age_s=3.0)
+        except (RPStateError, ValueError) as exc:
+            self._show_error(str(exc))
+            return
         self._clear_error()
 
         nx, ny = self.nx.value(), self.ny.value()
@@ -541,7 +557,6 @@ class ScanPanel(QWidget):
             order=self.order_combo.currentData(),
             angle_deg=self.angle.value(),
         )
-        settings = self.demod_source.settings()
         # Override n_block to match user-requested frames per point.
         from dataclasses import replace  # noqa: PLC0415
         settings = replace(settings, n_block=self.frames_per_point.value())
@@ -549,6 +564,8 @@ class ScanPanel(QWidget):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._pending_stem = f"{self.stem.text()}_{timestamp}"
         self._pending_out_dir = Path(self.output_dir.text())
+        self._pending_rp_start = rp_start
+        self._pending_rp_path = rp_path
 
         metadata: dict[str, Any] = {
             "software": "idus420_gui",
@@ -568,6 +585,8 @@ class ScanPanel(QWidget):
             "window": settings.window,
         }
         metadata["snom_host"] = self.snom_host.text()
+        if rp_start is not None:
+            metadata.update(rp_start.metadata())
 
         # Reuse the stage backend across scans — disconnect/reconnect between
         # scans corrupts the neaspec session state.  Create a new instance if
@@ -862,13 +881,14 @@ class ScanPanel(QWidget):
         path = out_dir / f"{stem}.h5"
 
         metadata = dict(result.metadata)
-        if self.rp_state_cb.isChecked() and self.rp_state_path.text():
-            rp = load_rp_metadata(self.rp_state_path.text())
-            if rp is None:
-                p = self.rp_state_path.text()
-                self.log_message.emit(f"Warning: could not read RP state from {p!r} — skipping.")
-            else:
-                metadata.update(rp)
+        rp_start = getattr(self, "_pending_rp_start", None)
+        if rp_start is not None:
+            try:
+                rp_end = load_rp_state(self._pending_rp_path, max_age_s=3.0)
+            except RPStateError as exc:
+                rp_end = None
+                self.log_message.emit(f"Warning: could not verify final RP state: {exc}")
+            metadata.update(rp_run_metadata(rp_start, rp_end))
         try:
             save_scan_h5(path, result, metadata, self._wavelength_axis)  # type: ignore[arg-type]
             self.log_message.emit(f"Scan saved to {path}")
