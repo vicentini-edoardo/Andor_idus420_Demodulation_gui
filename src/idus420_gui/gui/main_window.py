@@ -32,6 +32,45 @@ from idus420_gui.gui.widgets import LogView
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+def _run_git_command(repo_dir: Path, cmd: list[str], run=subprocess.run) -> str:
+    result = run(cmd, capture_output=True, text=True, cwd=repo_dir, timeout=30)
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode != 0:
+        raise RuntimeError(output or f"{' '.join(cmd)} failed with exit code {result.returncode}")
+    return output
+
+
+def _run_git_update(repo_dir: Path, branch: str, run=subprocess.run) -> tuple[str, bool]:
+    remote_ref = f"origin/{branch}"
+    before_head = _run_git_command(repo_dir, ["git", "rev-parse", "HEAD"], run)
+    _run_git_command(repo_dir, ["git", "fetch", "--prune", "origin"], run)
+
+    if _run_git_command(repo_dir, ["git", "branch", "--show-current"], run) != branch:
+        try:
+            _run_git_command(repo_dir, ["git", "checkout", branch], run)
+        except RuntimeError:
+            _run_git_command(
+                repo_dir, ["git", "checkout", "-b", branch, "--track", remote_ref], run
+            )
+
+    _run_git_command(
+        repo_dir, ["git", "branch", "--set-upstream-to", remote_ref, branch], run
+    )
+    _run_git_command(repo_dir, ["git", "pull", "--ff-only"], run)
+    after_head = _run_git_command(repo_dir, ["git", "rev-parse", "HEAD"], run)
+    if before_head == after_head:
+        return "Already up to date.", False
+    return (
+        _run_git_command(
+            repo_dir,
+            ["git", "log", f"{before_head}..{after_head}", "--pretty=format:• %s", "--no-merges"],
+            run,
+        )
+        or "Updated.",
+        True,
+    )
+
+
 class _GitFetchWorker(QThread):
     # (returncode, branch_list, info) — info=current_branch on success, error msg on failure
     finished = pyqtSignal(int, object, str)
@@ -83,34 +122,8 @@ class _GitSwitchWorker(QThread):
 
     def run(self) -> None:
         try:
-            head = subprocess.run(
-                ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
-                capture_output=True, text=True,
-            ).stdout.strip()
-
-            r = subprocess.run(
-                ["git", "-C", str(_REPO_ROOT), "checkout", self._branch],
-                capture_output=True, text=True, timeout=30,
-            )
-            if r.returncode != 0:
-                self.finished.emit(r.returncode, (r.stdout + r.stderr).strip())
-                return
-
-            r2 = subprocess.run(
-                ["git", "-C", str(_REPO_ROOT), "pull"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if r2.returncode != 0:
-                self.finished.emit(r2.returncode, (r2.stdout + r2.stderr).strip())
-                return
-
-            log = subprocess.run(
-                ["git", "-C", str(_REPO_ROOT), "log", f"{head}..HEAD",
-                 "--pretty=format:• %s", "--no-merges"],
-                capture_output=True, text=True,
-            ).stdout.strip()
-
-            self.finished.emit(0, log if log else "Already up to date.")
+            output, _changed = _run_git_update(_REPO_ROOT, self._branch)
+            self.finished.emit(0, output)
         except Exception as exc:
             self.finished.emit(-1, str(exc))
 
