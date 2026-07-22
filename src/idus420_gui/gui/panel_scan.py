@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 from idus420_gui.camera.base import CameraBackend
 from idus420_gui.gui import theme
 from idus420_gui.gui.panel_demod import DemodPanel
+from idus420_gui.io.powermeter import read_power_metadata
 from idus420_gui.io.rp_state import (
     RedPitayaState,
     RPStateError,
@@ -587,6 +588,9 @@ class ScanPanel(QWidget):
         metadata["snom_host"] = self.snom_host.text()
         if rp_start is not None:
             metadata.update(rp_start.metadata())
+        power_before = read_power_metadata("power_before_")
+        if power_before is not None:
+            metadata.update(power_before)
 
         # Reuse the stage backend across scans — disconnect/reconnect between
         # scans corrupts the neaspec session state.  Create a new instance if
@@ -889,6 +893,9 @@ class ScanPanel(QWidget):
                 rp_end = None
                 self.log_message.emit(f"Warning: could not verify final RP state: {exc}")
             metadata.update(rp_run_metadata(rp_start, rp_end))
+        power_after = read_power_metadata("power_after_")
+        if power_after is not None:
+            metadata.update(power_after)
         try:
             save_scan_h5(path, result, metadata, self._wavelength_axis)  # type: ignore[arg-type]
             self.log_message.emit(f"Scan saved to {path}")

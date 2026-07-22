@@ -31,6 +31,11 @@ snom = [
   "nest_asyncio>=1.6,<2",
 ]
 spectrograph = []  # pyAndorSpectrograph ships with the Andor SDK; not on PyPI
+powermeter = [
+  "pyvisa>=1.13,<2",
+  "pyvisa-py>=0.7,<1",   # pure-python VISA backend, no NI-VISA needed
+  "ThorlabsPM100>=1.2,<2",
+]
 
 [project.scripts]
 idus420-gui = "idus420_gui.__main__:main"
