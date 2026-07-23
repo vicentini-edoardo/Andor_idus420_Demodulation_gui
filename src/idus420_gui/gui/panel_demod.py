@@ -61,6 +61,8 @@ class DemodPanel(QWidget):
     log_message = pyqtSignal(str)
     running_changed = pyqtSignal(bool)
     rp_trigger_synced = pyqtSignal(float)
+    exposure_changed = pyqtSignal(float)
+    trigger_changed = pyqtSignal(float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -95,6 +97,9 @@ class DemodPanel(QWidget):
     def set_exposure(self, value: float) -> None:
         self.exposure_spin.setValue(value)
 
+    def set_trigger_frequency(self, value: float) -> None:
+        self.trigger_spin.setValue(value)
+
     def set_wavelength_axis(self, axis: object) -> None:
         """Accept a calibrated wavelength array (nm per pixel) or None to reset."""
         self._wavelength_axis = np.asarray(axis, dtype=np.float64) if axis is not None else None
@@ -125,10 +130,10 @@ class DemodPanel(QWidget):
         grid.setColumnStretch(1, 1)
 
         self.exposure_spin = QDoubleSpinBox()
-        self.exposure_spin.setDecimals(6)
-        self.exposure_spin.setRange(0.000001, 1000)
-        self.exposure_spin.setValue(0.001)
-        self.exposure_spin.setSuffix(" s")
+        self.exposure_spin.setDecimals(3)
+        self.exposure_spin.setRange(0.001, 1_000_000)
+        self.exposure_spin.setValue(1.0)
+        self.exposure_spin.setSuffix(" ms")
 
         self.trigger_spin = QDoubleSpinBox()
         self.trigger_spin.setRange(0.001, 1_000_000)
@@ -143,9 +148,6 @@ class DemodPanel(QWidget):
         self.roi_end = QSpinBox()
         self.roi_end.setRange(0, 100_000)
         self.roi_end.setValue(560)
-
-        self.roi_method = QComboBox()
-        self.roi_method.addItems(["sum", "mean"])
 
         self.n_block = QSpinBox()
         self.n_block.setRange(4, 1_000_000)
@@ -185,9 +187,6 @@ class DemodPanel(QWidget):
         row += 1
         grid.addWidget(_lbl("ROI end (px)"), row, 0)
         grid.addWidget(self.roi_end, row, 1)
-        row += 1
-        grid.addWidget(_lbl("ROI method"), row, 0)
-        grid.addWidget(self.roi_method, row, 1)
         row += 1
         grid.addWidget(_lbl("Frames / FFT block"), row, 0)
         grid.addWidget(self.n_block, row, 1)
@@ -305,6 +304,8 @@ class DemodPanel(QWidget):
         self.rp_sync_button.clicked.connect(lambda: self._sync_clicked())
         self.rp_sync_cb.toggled.connect(self._rp_sync_toggled)
         self.trigger_spin.valueChanged.connect(self._update_resolution)
+        self.exposure_spin.valueChanged.connect(self.exposure_changed.emit)
+        self.trigger_spin.valueChanged.connect(self.trigger_changed.emit)
         self.n_block.valueChanged.connect(self._update_resolution)
         self.roi_start.valueChanged.connect(self._update_roi_region)
         self.roi_end.valueChanged.connect(self._update_roi_region)
@@ -339,11 +340,11 @@ class DemodPanel(QWidget):
 
     def settings(self) -> DemodulationSettings:
         return DemodulationSettings(
-            exposure_s=self.exposure_spin.value(),
+            exposure_s=self.exposure_spin.value() / 1000.0,
             trigger_frequency_hz=self.trigger_spin.value(),
             pixel_start=self.roi_start.value(),
             pixel_end=self.roi_end.value(),
-            roi_method=self.roi_method.currentText(),  # type: ignore[arg-type]
+            roi_method="mean",
             n_block=self.n_block.value(),
             f_expected=self.expected.value(),
             f_search_halfwidth=self.search.value(),
@@ -485,7 +486,6 @@ class DemodPanel(QWidget):
             self.trigger_spin,
             self.roi_start,
             self.roi_end,
-            self.roi_method,
             self.n_block,
             self.expected,
             self.search,
@@ -516,7 +516,6 @@ class DemodPanel(QWidget):
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/trigger_hz", self.trigger_spin.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_start", self.roi_start.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_end", self.roi_end.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_method", self.roi_method.currentText())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/n_block", self.n_block.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/f_expected", self.expected.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/f_search_hw", self.search.value())
@@ -547,10 +546,6 @@ class DemodPanel(QWidget):
         self.trigger_spin.setValue(fval("trigger_hz", 500.0))
         self.roi_start.setValue(ival("roi_start", 480))
         self.roi_end.setValue(ival("roi_end", 560))
-        method = sval("roi_method", "sum")
-        idx = self.roi_method.findText(method)
-        if idx >= 0:
-            self.roi_method.setCurrentIndex(idx)
         self.n_block.setValue(ival("n_block", 512))
         self.expected.setValue(fval("f_expected", 37.0))
         self.search.setValue(fval("f_search_hw", 5.0))

@@ -195,10 +195,10 @@ class CameraPanel(QWidget):
         self.shutter_combo.addItems(list(SHUTTER_MODE_LABELS))
 
         self.exposure_spin = QDoubleSpinBox()
-        self.exposure_spin.setDecimals(6)
-        self.exposure_spin.setRange(0.000001, 1000.0)
-        self.exposure_spin.setValue(0.001)
-        self.exposure_spin.setSuffix(" s")
+        self.exposure_spin.setDecimals(3)
+        self.exposure_spin.setRange(0.001, 1_000_000.0)
+        self.exposure_spin.setValue(1.0)
+        self.exposure_spin.setSuffix(" ms")
 
         self.apply_button = QPushButton("Apply")
         self.actual_label = QLabel("Actual timings: --")
@@ -225,7 +225,7 @@ class CameraPanel(QWidget):
         # Row 3: H bin | Exposure
         config_grid.addWidget(self._hbin_label, 3, 0)
         config_grid.addWidget(self.hbin_spin, 3, 1)
-        config_grid.addWidget(QLabel("Exposure (s)"), 3, 2)
+        config_grid.addWidget(QLabel("Exposure (ms)"), 3, 2)
         config_grid.addWidget(self.exposure_spin, 3, 3)
 
         # Row 4: Shutter
@@ -297,6 +297,8 @@ class CameraPanel(QWidget):
 
         self.spectro_calibrate_button = QPushButton("Get Calibration")
         self.spectro_calibrate_button.setEnabled(False)
+        self.spectro_cal_enable_cb = QCheckBox("Enable calibration")
+        self.spectro_cal_enable_cb.setChecked(True)
         self.spectro_cal_label = QLabel("--")
         self.spectro_cal_label.setWordWrap(True)
 
@@ -328,6 +330,8 @@ class CameraPanel(QWidget):
         sg.addWidget(self.spectro_pixel_width_spin, row, 1)
         row += 1
         sg.addWidget(self.spectro_calibrate_button, row, 0, 1, 2)
+        row += 1
+        sg.addWidget(self.spectro_cal_enable_cb, row, 0, 1, 2)
         row += 1
         sg.addWidget(QLabel("Calibration"), row, 0)
         sg.addWidget(self.spectro_cal_label, row, 1)
@@ -367,10 +371,15 @@ class CameraPanel(QWidget):
         self.spectro_grating_combo.currentIndexChanged.connect(self._spectro_grating_changed)
         self.spectro_set_wl_button.clicked.connect(self._spectro_set_wavelength)
         self.spectro_calibrate_button.clicked.connect(self._spectro_get_calibration)
+        self.spectro_cal_enable_cb.toggled.connect(self._spectro_cal_enable_toggled)
+        self.hbin_spin.valueChanged.connect(self._spectro_refresh_calibration)
 
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
+
+    def set_exposure(self, value_ms: float) -> None:
+        self.exposure_spin.setValue(value_ms)
 
     def poll_temperature(self) -> None:
         """Read temperature from backend and update labels/LED."""
@@ -654,17 +663,64 @@ class CameraPanel(QWidget):
         pixel_um = self.spectro_pixel_width_spin.value() * hbin
         try:
             axis = self.spectro_backend.get_calibration(n_pixels, pixel_um)
+            self._apply_calibration(axis, note="")
             lo = float(np.nanmin(axis))
             hi = float(np.nanmax(axis))
-            self.spectro_cal_label.setText(f"{n_pixels} px  |  {lo:.1f} – {hi:.1f} nm")
-            self._last_calibration = axis
-            self._save_calibration()
-            self.wavelength_axis_changed.emit(axis)
             self.log_message.emit(
                 f"Wavelength calibration: {n_pixels} px, {lo:.1f}–{hi:.1f} nm."
             )
         except SpectroError as exc:
             self.log_message.emit(str(exc))
+
+    def _spectro_refresh_calibration(self) -> None:
+        """Re-derive the wavelength axis for the current H-bin/geometry.
+
+        Runs whenever H bin changes, whether or not the spectrograph is
+        connected — offline, the last calibration curve is rescaled to the
+        new pixel count instead of being dropped.
+        """
+        if self._last_calibration is None:
+            return
+        if self.spectro_backend and self.spectro_backend.is_connected():
+            self._spectro_get_calibration()
+            return
+        hbin = self.hbin_spin.value()
+        if self.backend and self.backend.is_connected():
+            n_pixels = self.backend.frame_width()
+        else:
+            n_pixels = max(1, 1024 // hbin)
+        old = self._last_calibration
+        if n_pixels != len(old):
+            # ponytail: linear resample of the last known curve — an
+            # approximation of the true grating dispersion at the new pixel
+            # count, good enough offline; reconnecting recomputes exactly.
+            axis = np.interp(
+                np.linspace(0, len(old) - 1, n_pixels),
+                np.arange(len(old)),
+                old,
+            )
+        else:
+            axis = old
+        self._apply_calibration(axis, note="offline, rescaled")
+
+    def _spectro_cal_enable_toggled(self, enabled: bool) -> None:
+        if enabled:
+            if self._last_calibration is not None:
+                self._spectro_refresh_calibration()
+        else:
+            self.wavelength_axis_changed.emit(None)
+
+    def _apply_calibration(self, axis: np.ndarray, note: str) -> None:
+        """Cache a calibration curve, persist it, and (if enabled) broadcast it."""
+        self._last_calibration = axis
+        self._save_calibration()
+        n = len(axis)
+        lo = float(np.nanmin(axis))
+        hi = float(np.nanmax(axis))
+        suffix = f"  ({note})" if note else ""
+        self.spectro_cal_label.setText(f"{n} px  |  {lo:.1f} – {hi:.1f} nm{suffix}")
+        if self.spectro_cal_enable_cb.isChecked():
+            self.wavelength_axis_changed.emit(axis)
 
     def _apply_config(self) -> None:
         if not self.backend:
@@ -704,7 +760,7 @@ class CameraPanel(QWidget):
             vs_speed_index=self.vs_combo.currentIndex(),
             preamp_gain_index=self.preamp_combo.currentIndex(),
             shutter_mode=shutter,
-            exposure_s=self.exposure_spin.value(),
+            exposure_s=self.exposure_spin.value() / 1000.0,
             read_mode=read_mode,
             fvb_horizontal_bin=self.hbin_spin.value(),
             single_track=SingleTrackConfig(
@@ -769,10 +825,12 @@ class CameraPanel(QWidget):
         lo = float(np.nanmin(axis))
         hi = float(np.nanmax(axis))
         self.spectro_cal_label.setText(f"{n} px  |  {lo:.1f} – {hi:.1f} nm  (restored)")
-        self.wavelength_axis_changed.emit(axis)
+        if self.spectro_cal_enable_cb.isChecked():
+            self.wavelength_axis_changed.emit(axis)
 
     def _save_settings(self) -> None:
         s = QSettings("idus420_gui", "CameraPanel")
+        s.setValue(f"{_SETTINGS_KEY_PREFIX}/cal_enabled", self.spectro_cal_enable_cb.isChecked())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/exposure_s", self.exposure_spin.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/shutter", self.shutter_combo.currentText())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/backend", self.backend_combo.currentText())
@@ -818,5 +876,7 @@ class CameraPanel(QWidget):
             self.crop_width_spin.setValue(int(val))
         if (val := s.value(f"{_SETTINGS_KEY_PREFIX}/crop_vbin")) is not None:
             self.crop_vbin_spin.setValue(int(val))
+        if (val := s.value(f"{_SETTINGS_KEY_PREFIX}/cal_enabled")) is not None:
+            self.spectro_cal_enable_cb.setChecked(val is True or val == "true")
         self._clear_pending()
         QTimer.singleShot(0, self._restore_calibration)

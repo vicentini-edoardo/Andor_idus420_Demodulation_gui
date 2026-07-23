@@ -34,6 +34,8 @@ class LiveSpectrumPanel(QWidget):
 
     log_message = pyqtSignal(str)
     running_changed = pyqtSignal(bool)
+    exposure_changed = pyqtSignal(float)
+    trigger_changed = pyqtSignal(float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -46,8 +48,8 @@ class LiveSpectrumPanel(QWidget):
         self._history_t: deque[float] = deque()
         self._history_roi: deque[float] = deque()
         self._history_roi2: deque[float] = deque()
-        self._last_roi_sum: float | None = None
-        self._last_roi_sum2: float | None = None
+        self._last_roi_mean: float | None = None
+        self._last_roi_mean2: float | None = None
         self._build_ui()
         self._restore_settings()
 
@@ -104,7 +106,7 @@ class LiveSpectrumPanel(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(4)
 
-        self.readout = ReadoutLabel("Spectrum: -- | ROI sum: --")
+        self.readout = ReadoutLabel("Spectrum: -- | ROI mean: --")
         outer.addWidget(self.readout)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -121,20 +123,16 @@ class LiveSpectrumPanel(QWidget):
         grid.setColumnStretch(1, 1)
 
         self.exposure_spin = QDoubleSpinBox()
-        self.exposure_spin.setDecimals(6)
-        self.exposure_spin.setRange(0.000001, 1000)
-        self.exposure_spin.setValue(0.001)
-        self.exposure_spin.setSuffix(" s")
+        self.exposure_spin.setDecimals(3)
+        self.exposure_spin.setRange(0.001, 1_000_000)
+        self.exposure_spin.setValue(1.0)
+        self.exposure_spin.setSuffix(" ms")
 
         self.trigger_spin = QDoubleSpinBox()
         self.trigger_spin.setRange(0.001, 1_000_000)
         self.trigger_spin.setDecimals(6)
         self.trigger_spin.setValue(500.0)
         self.trigger_spin.setSuffix(" Hz")
-
-        self.burst_spin = QSpinBox()
-        self.burst_spin.setRange(4, 4096)
-        self.burst_spin.setValue(64)
 
         self.roi_start = QSpinBox()
         self.roi_start.setRange(0, 100_000)
@@ -167,9 +165,6 @@ class LiveSpectrumPanel(QWidget):
         row += 1
         grid.addWidget(_lbl("Trigger freq."), row, 0)
         grid.addWidget(self.trigger_spin, row, 1)
-        row += 1
-        grid.addWidget(_lbl("Frames / burst"), row, 0)
-        grid.addWidget(self.burst_spin, row, 1)
         row += 1
         grid.addWidget(_lbl("ROI1 start (px)"), row, 0)
         grid.addWidget(self.roi_start, row, 1)
@@ -208,7 +203,7 @@ class LiveSpectrumPanel(QWidget):
         self.history_plot = self.plot_widget.addPlot(
             row=1,
             col=0,
-            title="ROI summed counts vs time",
+            title="ROI mean counts vs time",
         )
         self.plot_widget.ci.layout.setRowStretchFactor(0, 3)
         self.plot_widget.ci.layout.setRowStretchFactor(1, 2)
@@ -223,7 +218,7 @@ class LiveSpectrumPanel(QWidget):
             pen=pg.mkPen(theme.CURVE_CYAN, width=1.8)
         )
         self.history_plot.setLabel("bottom", "Time (s)")
-        self.history_plot.setLabel("left", "ROI1 sum (counts)", color=theme.CURVE_CYAN)
+        self.history_plot.setLabel("left", "ROI1 mean (counts)", color=theme.CURVE_CYAN)
 
         # --- twin right-axis for ROI2 ---
         self.history_plot.showAxis("right")
@@ -236,7 +231,7 @@ class LiveSpectrumPanel(QWidget):
         )
         self.history_vb2.addItem(self.history_curve2)
         self.history_plot.getAxis("right").setLabel(
-            "ROI2 sum (counts)", color=theme.CURVE_MAGENTA
+            "ROI2 mean (counts)", color=theme.CURVE_MAGENTA
         )
 
         def _sync_history_vb2() -> None:
@@ -289,6 +284,8 @@ class LiveSpectrumPanel(QWidget):
         self.roi_end2.valueChanged.connect(self._update_roi_region2)
         self.roi_region2.sigRegionChanged.connect(self._update_roi_spinboxes_from_region2)
         self.history_points_spin.valueChanged.connect(self._trim_history)
+        self.exposure_spin.valueChanged.connect(self.exposure_changed.emit)
+        self.trigger_spin.valueChanged.connect(self.trigger_changed.emit)
 
     def start(self) -> None:
         if not self.backend:
@@ -299,19 +296,18 @@ class LiveSpectrumPanel(QWidget):
         self._history_t.clear()
         self._history_roi.clear()
         self._history_roi2.clear()
-        self._last_roi_sum = None
-        self._last_roi_sum2 = None
+        self._last_roi_mean = None
+        self._last_roi_mean2 = None
         self.history_curve.clear()
         self.history_curve2.clear()
         self.history_plot.enableAutoRange()
         self.history_plot.autoRange()
         self.worker = LiveSpectrumWorker(
             self.backend,
-            self.exposure_spin.value(),
+            self.exposure_spin.value() / 1000.0,
             self.trigger_spin.value(),
             self.roi_start.value(),
             self.roi_end.value(),
-            self.burst_spin.value(),
             self.roi_start2.value(),
             self.roi_end2.value(),
         )
@@ -337,12 +333,12 @@ class LiveSpectrumPanel(QWidget):
         y_max = int(arr.max()) if arr.size else 0
         self._set_readout(arr.size, y_min, y_max)
 
-    def _update_roi_history(self, elapsed_s: float, roi_sum: float, roi_sum2: float) -> None:
-        self._last_roi_sum = roi_sum
-        self._last_roi_sum2 = roi_sum2
+    def _update_roi_history(self, elapsed_s: float, roi_mean: float, roi_mean2: float) -> None:
+        self._last_roi_mean = roi_mean
+        self._last_roi_mean2 = roi_mean2
         self._history_t.append(float(elapsed_s))
-        self._history_roi.append(float(roi_sum))
-        self._history_roi2.append(float(roi_sum2))
+        self._history_roi.append(float(roi_mean))
+        self._history_roi2.append(float(roi_mean2))
         self._trim_history()
         spectrum_data = self.spectrum_curve.getData()[1]
         if spectrum_data is None:
@@ -403,11 +399,11 @@ class LiveSpectrumPanel(QWidget):
         self._sync_history_vb2()
 
     def _set_readout(self, n_px: int, y_min: int, y_max: int) -> None:
-        roi_text = f"{self._last_roi_sum:.0f}" if self._last_roi_sum is not None else "--"
-        roi2_text = f"{self._last_roi_sum2:.0f}" if self._last_roi_sum2 is not None else "--"
+        roi_text = f"{self._last_roi_mean:.1f}" if self._last_roi_mean is not None else "--"
+        roi2_text = f"{self._last_roi_mean2:.1f}" if self._last_roi_mean2 is not None else "--"
         self.readout.setText(
             f"Spectrum: {n_px} px | min {y_min} | max {y_max}"
-            f" | ROI1 sum: {roi_text} | ROI2 sum: {roi2_text}"
+            f" | ROI1 mean: {roi_text} | ROI2 mean: {roi2_text}"
         )
 
     def _validate_roi(self) -> bool:
@@ -485,7 +481,6 @@ class LiveSpectrumPanel(QWidget):
         for widget in [
             self.exposure_spin,
             self.trigger_spin,
-            self.burst_spin,
             self.roi_start,
             self.roi_end,
             self.roi_start2,
@@ -506,7 +501,6 @@ class LiveSpectrumPanel(QWidget):
         s = QSettings("idus420_gui", "LiveSpectrumPanel")
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/exposure_s", self.exposure_spin.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/trigger_hz", self.trigger_spin.value())
-        s.setValue(f"{_SETTINGS_KEY_PREFIX}/burst_frames", self.burst_spin.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_start", self.roi_start.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_end", self.roi_end.value())
         s.setValue(f"{_SETTINGS_KEY_PREFIX}/roi_start2", self.roi_start2.value())
@@ -529,7 +523,6 @@ class LiveSpectrumPanel(QWidget):
 
         self.exposure_spin.setValue(fval("exposure_s", 0.001))
         self.trigger_spin.setValue(fval("trigger_hz", 500.0))
-        self.burst_spin.setValue(ival("burst_frames", 64))
         self.roi_start.setValue(ival("roi_start", 480))
         self.roi_end.setValue(ival("roi_end", 560))
         self.roi_start2.setValue(ival("roi_start2", 600))

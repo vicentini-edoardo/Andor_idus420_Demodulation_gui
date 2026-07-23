@@ -184,13 +184,13 @@ class ScanPanel(QWidget):
 
         self.x_center = QDoubleSpinBox()
         self.x_center.setRange(-1e6, 1e6)
-        self.x_center.setDecimals(3)
+        self.x_center.setDecimals(2)
         self.x_center.setValue(50.0)
         self.x_center.setSuffix(" µm")
 
         self.x_length = QDoubleSpinBox()
-        self.x_length.setRange(0.001, 1e6)
-        self.x_length.setDecimals(3)
+        self.x_length.setRange(0.01, 1e6)
+        self.x_length.setDecimals(2)
         self.x_length.setValue(5.0)
         self.x_length.setSuffix(" µm")
 
@@ -202,13 +202,13 @@ class ScanPanel(QWidget):
 
         self.y_center = QDoubleSpinBox()
         self.y_center.setRange(-1e6, 1e6)
-        self.y_center.setDecimals(3)
+        self.y_center.setDecimals(2)
         self.y_center.setValue(50.0)
         self.y_center.setSuffix(" µm")
 
         self.y_length = QDoubleSpinBox()
-        self.y_length.setRange(0.001, 1e6)
-        self.y_length.setDecimals(3)
+        self.y_length.setRange(0.01, 1e6)
+        self.y_length.setDecimals(2)
         self.y_length.setValue(5.0)
         self.y_length.setSuffix(" µm")
 

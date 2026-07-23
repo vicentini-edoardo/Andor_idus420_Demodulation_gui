@@ -91,13 +91,12 @@ def test_live_spectrum_worker_emits_roi_samples(qtbot) -> None:  # type: ignore[
         trigger_frequency_hz=500.0,
         pixel_start=480,
         pixel_end=560,
-        burst_frames=4,
     )
 
     captured: list[tuple[float, float]] = []
     frames: list[np.ndarray] = []
     worker.roi_sample.connect(
-        lambda elapsed_s, roi_sum: captured.append((elapsed_s, roi_sum))
+        lambda elapsed_s, roi_mean: captured.append((elapsed_s, roi_mean))
     )
     worker.frame_acquired.connect(lambda frame: frames.append(np.asarray(frame).copy()))
 
@@ -110,9 +109,9 @@ def test_live_spectrum_worker_emits_roi_samples(qtbot) -> None:  # type: ignore[
     assert len(captured) >= 4
     assert len(frames) >= 4
 
-    for idx, ((elapsed_s, roi_sum), frame) in enumerate(
+    for idx, ((elapsed_s, roi_mean), frame) in enumerate(
         zip(captured[:4], frames[:4], strict=False)
     ):
-        expected_sum = float(integrate_roi(frame.reshape(1, -1), 480, 560, "sum")[0])
+        expected_mean = float(integrate_roi(frame.reshape(1, -1), 480, 560, "mean")[0])
         assert elapsed_s == pytest.approx(idx / 500.0)
-        assert roi_sum == pytest.approx(expected_sum)
+        assert roi_mean == pytest.approx(expected_mean)

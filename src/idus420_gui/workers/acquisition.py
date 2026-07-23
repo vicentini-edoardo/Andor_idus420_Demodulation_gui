@@ -313,7 +313,6 @@ class LiveSpectrumWorker(QThread):
         trigger_frequency_hz: float,
         pixel_start: int,
         pixel_end: int,
-        burst_frames: int = 64,
         pixel_start2: int = 0,
         pixel_end2: int = 0,
         parent: QObject | None = None,
@@ -326,7 +325,6 @@ class LiveSpectrumWorker(QThread):
         self.pixel_end = int(pixel_end)
         self.pixel_start2 = int(pixel_start2)
         self.pixel_end2 = int(pixel_end2)
-        self.burst_frames = int(max(4, burst_frames))
         self._running = True
 
     def stop(self) -> None:
@@ -348,7 +346,7 @@ class LiveSpectrumWorker(QThread):
         sample_index = 0
         try:
             self.setPriority(self.Priority.HighPriority)
-            acquisition_frames = max(self.burst_frames, _LIVE_ACQUISITION_FRAMES)
+            acquisition_frames = _LIVE_ACQUISITION_FRAMES
             while self._running:
                 self.backend.setup_kinetic(
                     self.exposure_s,
@@ -368,24 +366,24 @@ class LiveSpectrumWorker(QThread):
                     for frame in ready:
                         self.frame_acquired.emit(frame.copy())
                         frame_row = frame.reshape(1, -1)
-                        roi_sum = float(
+                        roi_mean = float(
                             integrate_roi(
                                 frame_row,
                                 self.pixel_start,
                                 self.pixel_end,
-                                "sum",
+                                "mean",
                             )[0]
                         )
-                        roi_sum2 = float(
+                        roi_mean2 = float(
                             integrate_roi(
                                 frame_row,
                                 self.pixel_start2,
                                 self.pixel_end2,
-                                "sum",
+                                "mean",
                             )[0]
                         )
                         elapsed_s = sample_index / max(self.trigger_frequency_hz, 1e-6)
-                        self.roi_sample.emit(elapsed_s, roi_sum, roi_sum2)
+                        self.roi_sample.emit(elapsed_s, roi_mean, roi_mean2)
                         sample_index += 1
         except Exception as exc:  # noqa: BLE001 - worker must report and exit cleanly.
             LOG.exception("LiveSpectrumWorker error")
